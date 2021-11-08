@@ -47,7 +47,7 @@ stages:
           outputFormat: 'pre'
       - task: NodeTool@0
         inputs:
-          versionSpec: "14.x"
+          versionSpec: "16.x"
 
       - task: geeklearningio.gl-vsts-tasks-yarn.yarn-installer-task.YarnInstaller@2
         inputs:
@@ -142,7 +142,7 @@ stages:
           toolMajorVersion: 'V2'
       - task: NodeTool@0
         inputs:
-          versionSpec: "14.x"
+          versionSpec: "16.x"
 
       - task: geeklearningio.gl-vsts-tasks-yarn.yarn-installer-task.YarnInstaller@2
         inputs:
