@@ -186,7 +186,7 @@ export class TypeScriptServerSpawner {
 		apiVersion: API,
 		pluginManager: PluginManager,
 		cancellationPipeName: string | undefined,
-	): { args: string[], tsServerLogFile: string | undefined, tsServerTraceDirectory: string | undefined } {
+	): { args: string[]; tsServerLogFile: string | undefined; tsServerTraceDirectory: string | undefined } {
 		const args: string[] = [];
 		let tsServerLogFile: string | undefined;
 		let tsServerTraceDirectory: string | undefined;
@@ -199,11 +199,7 @@ export class TypeScriptServerSpawner {
 			}
 		}
 
-		if (apiVersion.gte(API.v250)) {
-			args.push('--useInferredProjectPerProjectRoot');
-		} else {
-			args.push('--useSingleInferredProject');
-		}
+		args.push('--useInferredProjectPerProjectRoot');
 
 		if (configuration.disableAutomaticTypeAcquisition || kind === TsServerProcessKind.Syntax || kind === TsServerProcessKind.Diagnostics) {
 			args.push('--disableAutomaticTypingAcquisition');
@@ -245,7 +241,7 @@ export class TypeScriptServerSpawner {
 			const isUsingBundledTypeScriptVersion = currentVersion.path === this._versionProvider.defaultVersion.path;
 			for (const plugin of pluginManager.plugins) {
 				if (isUsingBundledTypeScriptVersion || plugin.enableForWorkspaceTypeScriptVersions) {
-					pluginPaths.push(isWeb() ? plugin.uri.toString() : plugin.uri.path);
+					pluginPaths.push(isWeb() ? plugin.uri.toString() : plugin.uri.fsPath);
 				}
 			}
 		}

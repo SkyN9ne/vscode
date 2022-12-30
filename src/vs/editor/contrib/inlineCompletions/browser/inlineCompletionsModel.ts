@@ -3,73 +3,110 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
+import { assertNever } from 'vs/base/common/assert';
 import { CancelablePromise, createCancelablePromise, RunOnceScheduler } from 'vs/base/common/async';
 import { CancellationToken } from 'vs/base/common/cancellation';
 import { onUnexpectedError, onUnexpectedExternalError } from 'vs/base/common/errors';
 import { Emitter } from 'vs/base/common/event';
+import { matchesSubString } from 'vs/base/common/filters';
 import { Disposable, IDisposable, MutableDisposable, toDisposable } from 'vs/base/common/lifecycle';
-import { commonPrefixLength, commonSuffixLength } from 'vs/base/common/strings';
-import { CoreEditingCommands } from 'vs/editor/browser/controller/coreCommands';
+import { CoreEditingCommands } from 'vs/editor/browser/coreCommands';
 import { IActiveCodeEditor } from 'vs/editor/browser/editorBrowser';
 import { EditorOption } from 'vs/editor/common/config/editorOptions';
 import { EditOperation } from 'vs/editor/common/core/editOperation';
 import { Position } from 'vs/editor/common/core/position';
 import { Range } from 'vs/editor/common/core/range';
+import { CursorChangeReason } from 'vs/editor/common/cursorEvents';
+import { LanguageFeatureRegistry } from 'vs/editor/common/languageFeatureRegistry';
+import { Command, InlineCompletion, InlineCompletionContext, InlineCompletions, InlineCompletionsProvider, InlineCompletionTriggerKind } from 'vs/editor/common/languages';
+import { ILanguageConfigurationService } from 'vs/editor/common/languages/languageConfigurationRegistry';
 import { ITextModel } from 'vs/editor/common/model';
-import { InlineCompletion, InlineCompletionContext, InlineCompletions, InlineCompletionsProvider, InlineCompletionsProviderRegistry, InlineCompletionTriggerKind } from 'vs/editor/common/languages';
-import { BaseGhostTextWidgetModel, GhostText, GhostTextWidgetModel } from 'vs/editor/contrib/inlineCompletions/browser/ghostText';
+import { fixBracketsInLine } from 'vs/editor/common/model/bracketPairsTextModelPart/fixBrackets';
+import { IFeatureDebounceInformation, ILanguageFeatureDebounceService } from 'vs/editor/common/services/languageFeatureDebounce';
+import { ILanguageFeaturesService } from 'vs/editor/common/services/languageFeatures';
+import { inlineSuggestCommitId } from 'vs/editor/contrib/inlineCompletions/browser/consts';
+import { BaseGhostTextWidgetModel, GhostText, GhostTextReplacement, GhostTextWidgetModel } from 'vs/editor/contrib/inlineCompletions/browser/ghostText';
+import { SharedInlineCompletionCache } from 'vs/editor/contrib/inlineCompletions/browser/ghostTextModel';
+import { inlineCompletionToGhostText, NormalizedInlineCompletion } from 'vs/editor/contrib/inlineCompletions/browser/inlineCompletionToGhostText';
+import { getReadonlyEmptyArray } from 'vs/editor/contrib/inlineCompletions/browser/utils';
+import { SnippetController2 } from 'vs/editor/contrib/snippet/browser/snippetController2';
+import { SnippetParser, Text } from 'vs/editor/contrib/snippet/browser/snippetParser';
 import { ICommandService } from 'vs/platform/commands/common/commands';
-import { inlineSuggestCommitId } from './consts';
-import { SharedInlineCompletionCache } from './ghostTextModel';
-import { inlineCompletionToGhostText, NormalizedInlineCompletion } from './inlineCompletionToGhostText';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 
 export class InlineCompletionsModel extends Disposable implements GhostTextWidgetModel {
 	protected readonly onDidChangeEmitter = new Emitter<void>();
 	public readonly onDidChange = this.onDidChangeEmitter.event;
 
-	public readonly completionSession = this._register(new MutableDisposable<InlineCompletionsSession>());
+	public readonly completionSession = this._register(
+		new MutableDisposable<InlineCompletionsSession>()
+	);
 
 	private active: boolean = false;
 	private disposed = false;
+	private readonly debounceValue = this.debounceService.for(
+		this.languageFeaturesService.inlineCompletionsProvider,
+		'InlineCompletionsDebounce',
+		{ min: 50, max: 50 }
+	);
 
 	constructor(
 		private readonly editor: IActiveCodeEditor,
 		private readonly cache: SharedInlineCompletionCache,
 		@ICommandService private readonly commandService: ICommandService,
+		@ILanguageConfigurationService private readonly languageConfigurationService: ILanguageConfigurationService,
+		@ILanguageFeaturesService private readonly languageFeaturesService: ILanguageFeaturesService,
+		@ILanguageFeatureDebounceService private readonly debounceService: ILanguageFeatureDebounceService,
+		@IConfigurationService configurationService: IConfigurationService,
 	) {
 		super();
 
-		this._register(commandService.onDidExecuteCommand(e => {
-			// These commands don't trigger onDidType.
-			const commands = new Set([
-				CoreEditingCommands.Tab.id,
-				CoreEditingCommands.DeleteLeft.id,
-				CoreEditingCommands.DeleteRight.id,
-				inlineSuggestCommitId,
-				'acceptSelectedSuggestion'
-			]);
-			if (commands.has(e.commandId) && editor.hasTextFocus()) {
+		this._register(
+			commandService.onDidExecuteCommand((e) => {
+				// These commands don't trigger onDidType.
+				const commands = new Set([
+					CoreEditingCommands.Tab.id,
+					CoreEditingCommands.DeleteLeft.id,
+					CoreEditingCommands.DeleteRight.id,
+					inlineSuggestCommitId,
+					'acceptSelectedSuggestion',
+				]);
+				if (commands.has(e.commandId) && editor.hasTextFocus()) {
+					this.handleUserInput();
+				}
+			})
+		);
+
+		this._register(
+			this.editor.onDidType((e) => {
 				this.handleUserInput();
-			}
-		}));
+			})
+		);
 
-		this._register(this.editor.onDidType((e) => {
-			this.handleUserInput();
-		}));
+		this._register(
+			this.editor.onDidChangeCursorPosition((e) => {
+				if (e.reason === CursorChangeReason.Explicit ||
+					this.session && !this.session.isValid) {
+					this.hide();
+				}
+			})
+		);
 
-		this._register(this.editor.onDidChangeCursorPosition((e) => {
-			if (this.session && !this.session.isValid) {
+		this._register(
+			toDisposable(() => {
+				this.disposed = true;
+			})
+		);
+
+		this._register(
+			this.editor.onDidBlurEditorWidget(() => {
+				// This is a hidden setting very useful for debugging
+				if (configurationService.getValue('editor.inlineSuggest.hideOnBlur')) {
+					return;
+				}
 				this.hide();
-			}
-		}));
-
-		this._register(toDisposable(() => {
-			this.disposed = true;
-		}));
-
-		this._register(this.editor.onDidBlurEditorWidget(() => {
-			this.hide();
-		}));
+			})
+		);
 	}
 
 	private handleUserInput() {
@@ -89,7 +126,7 @@ export class InlineCompletionsModel extends Disposable implements GhostTextWidge
 		return this.completionSession.value;
 	}
 
-	public get ghostText(): GhostText | undefined {
+	public get ghostText(): GhostText | GhostTextReplacement | undefined {
 		return this.session?.ghostText;
 	}
 
@@ -138,7 +175,10 @@ export class InlineCompletionsModel extends Disposable implements GhostTextWidge
 			() => this.active,
 			this.commandService,
 			this.cache,
-			triggerKind
+			triggerKind,
+			this.languageConfigurationService,
+			this.languageFeaturesService.inlineCompletionsProvider,
+			this.debounceValue
 		);
 		this.completionSession.value.takeOwnership(
 			this.completionSession.value.onDidChange(() => {
@@ -155,6 +195,10 @@ export class InlineCompletionsModel extends Disposable implements GhostTextWidge
 	public commitCurrentSuggestion(): void {
 		// Don't dispose the session, so that after committing, more suggestions are shown.
 		this.session?.commitCurrentCompletion();
+	}
+
+	public commitCurrentSuggestionPartially(): void {
+		this.session?.commitCurrentCompletionNextWord();
 	}
 
 	public showNext(): void {
@@ -177,7 +221,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 	private readonly updateOperation = this._register(new MutableDisposable<UpdateOperation>());
 
 	private readonly updateSoon = this._register(new RunOnceScheduler(() => {
-		let triggerKind = this.initialTriggerKind;
+		const triggerKind = this.initialTriggerKind;
 		// All subsequent triggers are automatic.
 		this.initialTriggerKind = InlineCompletionTriggerKind.Automatic;
 		return this.update(triggerKind);
@@ -189,7 +233,10 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		private readonly shouldUpdate: () => boolean,
 		private readonly commandService: ICommandService,
 		private readonly cache: SharedInlineCompletionCache,
-		private initialTriggerKind: InlineCompletionTriggerKind
+		private initialTriggerKind: InlineCompletionTriggerKind,
+		private readonly languageConfigurationService: ILanguageConfigurationService,
+		private readonly registry: LanguageFeatureRegistry<InlineCompletionsProvider>,
+		private readonly debounce: IFeatureDebounceInformation,
 	) {
 		super(editor);
 
@@ -200,9 +247,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 				lastCompletionItem = currentCompletion.sourceInlineCompletion;
 
 				const provider = currentCompletion.sourceProvider;
-				if (provider.handleItemDidShow) {
-					provider.handleItemDidShow(currentCompletion.sourceInlineCompletions, lastCompletionItem);
-				}
+				provider.handleItemDidShow?.(currentCompletion.sourceInlineCompletions, lastCompletionItem);
 			}
 		}));
 
@@ -211,20 +256,71 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		}));
 
 		this._register(this.editor.onDidChangeCursorPosition((e) => {
+			if (e.reason === CursorChangeReason.Explicit) {
+				return;
+			}
+			// Ghost text depends on the cursor position
+			this.cache.value?.updateRanges();
 			if (this.cache.value) {
+				this.updateFilteredInlineCompletions();
 				this.onDidChangeEmitter.fire();
 			}
 		}));
 
 		this._register(this.editor.onDidChangeModelContent((e) => {
+			// Call this in case `onDidChangeModelContent` calls us first.
+			this.cache.value?.updateRanges();
+			this.updateFilteredInlineCompletions();
 			this.scheduleAutomaticUpdate();
 		}));
 
-		this._register(InlineCompletionsProviderRegistry.onDidChange(() => {
-			this.updateSoon.schedule();
+		this._register(this.registry.onDidChange(() => {
+			this.updateSoon.schedule(this.debounce.get(this.editor.getModel()));
 		}));
 
 		this.scheduleAutomaticUpdate();
+	}
+
+	private filteredCompletions: readonly CachedInlineCompletion[] = [];
+
+	private updateFilteredInlineCompletions() {
+		if (!this.cache.value) {
+			this.filteredCompletions = [];
+			return;
+		}
+
+		const model = this.editor.getModel();
+		const cursorPosition = model.validatePosition(this.editor.getPosition());
+		this.filteredCompletions = this.cache.value.completions.filter(c => {
+			const originalValue = model.getValueInRange(c.synchronizedRange).toLowerCase();
+			const filterText = c.inlineCompletion.filterText.toLowerCase();
+
+			const indent = model.getLineIndentColumn(c.synchronizedRange.startLineNumber);
+
+
+			const cursorPosIndex = Math.max(0, cursorPosition.column - c.synchronizedRange.startColumn);
+
+			let filterTextBefore = filterText.substring(0, cursorPosIndex);
+			let filterTextAfter = filterText.substring(cursorPosIndex);
+
+			let originalValueBefore = originalValue.substring(0, cursorPosIndex);
+			let originalValueAfter = originalValue.substring(cursorPosIndex);
+
+			if (c.synchronizedRange.startColumn <= indent) {
+				// Remove indentation
+				originalValueBefore = originalValueBefore.trimStart();
+				if (originalValueBefore.length === 0) {
+					originalValueAfter = originalValueAfter.trimStart();
+				}
+				filterTextBefore = filterTextBefore.trimStart();
+				if (filterTextBefore.length === 0) {
+					filterTextAfter = filterTextAfter.trimStart();
+				}
+			}
+
+			return filterTextBefore.startsWith(originalValueBefore)
+				&& matchesSubString(originalValueAfter, filterTextAfter);
+		});
 	}
 
 	//#region Selection
@@ -241,7 +337,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 			return 0;
 		}
 
-		const idx = this.cache.value.completions.findIndex(v => v.semanticId === this.currentlySelectedCompletionId);
+		const idx = this.filteredCompletions.findIndex(v => v.semanticId === this.currentlySelectedCompletionId);
 		if (idx === -1) {
 			// Reset the selection so that the selection does not jump back when it appears again
 			this.currentlySelectedCompletionId = undefined;
@@ -254,13 +350,13 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		if (!this.cache.value) {
 			return undefined;
 		}
-		return this.cache.value.completions[this.fixAndGetIndexOfCurrentSelection()];
+		return this.filteredCompletions[this.fixAndGetIndexOfCurrentSelection()];
 	}
 
 	public async showNextInlineCompletion(): Promise<void> {
 		await this.ensureUpdateWithExplicitContext();
 
-		const completions = this.cache.value?.completions || [];
+		const completions = this.filteredCompletions || [];
 		if (completions.length > 0) {
 			const newIdx = (this.fixAndGetIndexOfCurrentSelection() + 1) % completions.length;
 			this.currentlySelectedCompletionId = completions[newIdx].semanticId;
@@ -273,7 +369,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 	public async showPreviousInlineCompletion(): Promise<void> {
 		await this.ensureUpdateWithExplicitContext();
 
-		const completions = this.cache.value?.completions || [];
+		const completions = this.filteredCompletions || [];
 		if (completions.length > 0) {
 			const newIdx = (this.fixAndGetIndexOfCurrentSelection() + completions.length - 1) % completions.length;
 			this.currentlySelectedCompletionId = completions[newIdx].semanticId;
@@ -304,13 +400,35 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 
 	//#endregion
 
-	public get ghostText(): GhostText | undefined {
+	public get ghostText(): GhostText | GhostTextReplacement | undefined {
 		const currentCompletion = this.currentCompletion;
+		if (!currentCompletion) {
+			return undefined;
+		}
+		const cursorPosition = this.editor.getPosition();
+		if (currentCompletion.range.getEndPosition().isBefore(cursorPosition)) {
+			return undefined;
+		}
+
 		const mode = this.editor.getOptions().get(EditorOption.inlineSuggest).mode;
-		return currentCompletion ? inlineCompletionToGhostText(currentCompletion, this.editor.getModel(), mode, this.editor.getPosition()) : undefined;
+
+		const ghostText = inlineCompletionToGhostText(currentCompletion, this.editor.getModel(), mode, cursorPosition);
+		if (ghostText) {
+			if (ghostText.isEmpty()) {
+				return undefined;
+			}
+			return ghostText;
+		}
+		return new GhostTextReplacement(
+			currentCompletion.range.startLineNumber,
+			currentCompletion.range.startColumn,
+			currentCompletion.range.endColumn - currentCompletion.range.startColumn,
+			currentCompletion.insertText.split('\n'),
+			0
+		);
 	}
 
-	get currentCompletion(): LiveInlineCompletion | undefined {
+	get currentCompletion(): TrackedInlineCompletion | undefined {
 		const completion = this.currentCachedCompletion;
 		if (!completion) {
 			return undefined;
@@ -326,7 +444,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		// Since updateSoon debounces, starvation can happen.
 		// To prevent stale cache, we clear the current update operation.
 		this.updateOperation.clear();
-		this.updateSoon.schedule();
+		this.updateSoon.schedule(this.debounce.get(this.editor.getModel()));
 	}
 
 	private async update(triggerKind: InlineCompletionTriggerKind): Promise<void> {
@@ -336,14 +454,21 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 
 		const position = this.editor.getPosition();
 
+		const startTime = new Date();
+
 		const promise = createCancelablePromise(async token => {
 			let result;
 			try {
-				result = await provideInlineCompletions(position,
+				result = await provideInlineCompletions(this.registry, position,
 					this.editor.getModel(),
 					{ triggerKind, selectedSuggestionInfo: undefined },
-					token
+					token,
+					this.languageConfigurationService
 				);
+
+				const endTime = new Date();
+				this.debounce.update(this.editor.getModel(), endTime.getTime() - startTime.getTime());
+
 			} catch (e) {
 				onUnexpectedError(e);
 				return;
@@ -358,6 +483,7 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 				result,
 				triggerKind
 			);
+			this.updateFilteredInlineCompletions();
 			this.onDidChangeEmitter.fire();
 		});
 		const operation = new UpdateOperation(promise, triggerKind);
@@ -372,8 +498,59 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		this._register(disposable);
 	}
 
+	public commitCurrentCompletionNextWord(): void {
+		const ghostText = this.ghostText;
+		if (!ghostText) {
+			return;
+		}
+		const completion = this.currentCompletion;
+		if (!completion) {
+			return;
+		}
+
+		if (completion.snippetInfo || completion.filterText !== completion.insertText) {
+			// not in WYSIWYG mode, partial commit might change completion, thus it is not supported
+			this.commit(completion);
+			return;
+		}
+
+		if (ghostText.parts.length === 0) {
+			return;
+		}
+		const firstPart = ghostText.parts[0];
+		const position = new Position(ghostText.lineNumber, firstPart.column);
+
+		const line = firstPart.lines[0];
+		const langId = this.editor.getModel()!.getLanguageIdAtPosition(ghostText.lineNumber, 1);
+		const config = this.languageConfigurationService.getLanguageConfiguration(langId);
+		const r = new RegExp(config.wordDefinition, config.wordDefinition.flags.replace('g', ''));
+		const m = line.match(r);
+		let acceptUntilIndexExclusive = 0;
+		if (m && m.index !== undefined) {
+			if (m.index === 0) {
+				acceptUntilIndexExclusive = m[0].length;
+			} else {
+				acceptUntilIndexExclusive = m.index;
+			}
+		} else {
+			acceptUntilIndexExclusive = line.length;
+		}
+
+		const partialText = line.substring(0, acceptUntilIndexExclusive);
+
+		this.editor.pushUndoStop();
+		this.editor.executeEdits(
+			'inlineSuggestion.accept',
+			[
+				EditOperation.replace(Range.fromPositions(position), partialText),
+			]
+		);
+		this.editor.setPosition(position.delta(0, partialText.length));
+	}
+
 	public commitCurrentCompletion(): void {
-		if (!this.ghostText) {
+		const ghostText = this.ghostText;
+		if (!ghostText) {
 			// No ghost text was shown for this completion.
 			// Thus, we don't want to commit anything.
 			return;
@@ -384,17 +561,32 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		}
 	}
 
-	public commit(completion: LiveInlineCompletion): void {
+	public commit(completion: TrackedInlineCompletion): void {
 		// Mark the cache as stale, but don't dispose it yet,
 		// otherwise command args might get disposed.
 		const cache = this.cache.clearAndLeak();
 
-		this.editor.executeEdits(
-			'inlineSuggestion.accept',
-			[
-				EditOperation.replaceMove(completion.range, completion.text)
-			]
-		);
+		this.editor.pushUndoStop();
+		if (completion.snippetInfo) {
+			this.editor.executeEdits(
+				'inlineSuggestion.accept',
+				[
+					EditOperation.replaceMove(completion.range, ''),
+					...completion.additionalTextEdits
+				]
+			);
+			this.editor.setPosition(completion.snippetInfo.range.getStartPosition());
+			SnippetController2.get(this.editor)?.insert(completion.snippetInfo.snippet, { undoStopBefore: false });
+		} else {
+			this.editor.executeEdits(
+				'inlineSuggestion.accept',
+				[
+					EditOperation.replaceMove(completion.range, completion.insertText),
+					...completion.additionalTextEdits
+				]
+			);
+		}
+
 		if (completion.command) {
 			this.commandService
 				.executeCommand(completion.command.id, ...(completion.command.arguments || []))
@@ -407,6 +599,11 @@ export class InlineCompletionsSession extends BaseGhostTextWidgetModel {
 		}
 
 		this.onDidChangeEmitter.fire();
+	}
+
+	public get commands(): Command[] {
+		const lists = new Set(this.cache.value?.completions.map(c => c.inlineCompletion.sourceInlineCompletions) || []);
+		return [...lists].flatMap(l => l.commands || []);
 	}
 }
 
@@ -425,56 +622,70 @@ export class UpdateOperation implements IDisposable {
 */
 export class SynchronizedInlineCompletionsCache extends Disposable {
 	public readonly completions: readonly CachedInlineCompletion[];
+	private isDisposing = false;
 
 	constructor(
-		editor: IActiveCodeEditor,
-		completionsSource: LiveInlineCompletions,
-		onChange: () => void,
+		completionsSource: TrackedInlineCompletions,
+		private readonly editor: IActiveCodeEditor,
+		private readonly onChange: () => void,
 		public readonly triggerKind: InlineCompletionTriggerKind,
 	) {
 		super();
 
-		const decorationIds = editor.deltaDecorations(
-			[],
-			completionsSource.items.map(i => ({
-				range: i.range,
-				options: {
-					description: 'inline-completion-tracking-range'
-				},
-			}))
-		);
+		const decorationIds = editor.changeDecorations((changeAccessor) => {
+			return changeAccessor.deltaDecorations(
+				[],
+				completionsSource.items.map(i => ({
+					range: i.range,
+					options: {
+						description: 'inline-completion-tracking-range'
+					},
+				}))
+			);
+		});
+
 		this._register(toDisposable(() => {
-			editor.deltaDecorations(decorationIds, []);
+			this.isDisposing = true;
+			editor.removeDecorations(decorationIds);
 		}));
 
 		this.completions = completionsSource.items.map((c, idx) => new CachedInlineCompletion(c, decorationIds[idx]));
 
 		this._register(editor.onDidChangeModelContent(() => {
-			let hasChanged = false;
-			const model = editor.getModel();
-			for (const c of this.completions) {
-				const newRange = model.getDecorationRange(c.decorationId);
-				if (!newRange) {
-					onUnexpectedError(new Error('Decoration has no range'));
-					continue;
-				}
-				if (!c.synchronizedRange.equalsRange(newRange)) {
-					hasChanged = true;
-					c.synchronizedRange = newRange;
-				}
-			}
-			if (hasChanged) {
-				onChange();
-			}
+			this.updateRanges();
 		}));
 
 		this._register(completionsSource);
+	}
+
+	public updateRanges(): void {
+		if (this.isDisposing) {
+			return;
+		}
+
+		let hasChanged = false;
+		const model = this.editor.getModel();
+		for (const c of this.completions) {
+			const newRange = model.getDecorationRange(c.decorationId);
+			if (!newRange) {
+				onUnexpectedError(new Error('Decoration has no range'));
+				continue;
+			}
+			if (!c.synchronizedRange.equalsRange(newRange)) {
+				hasChanged = true;
+				c.synchronizedRange = newRange;
+			}
+		}
+		if (hasChanged) {
+			this.onChange();
+		}
 	}
 }
 
 class CachedInlineCompletion {
 	public readonly semanticId: string = JSON.stringify({
-		text: this.inlineCompletion.text,
+		text: this.inlineCompletion.insertText,
+		abbreviation: this.inlineCompletion.filterText,
 		startLine: this.inlineCompletion.range.startLineNumber,
 		startColumn: this.inlineCompletion.range.startColumn,
 		command: this.inlineCompletion.command
@@ -486,60 +697,42 @@ class CachedInlineCompletion {
 	public synchronizedRange: Range;
 
 	constructor(
-		public readonly inlineCompletion: LiveInlineCompletion,
+		public readonly inlineCompletion: TrackedInlineCompletion,
 		public readonly decorationId: string,
 	) {
 		this.synchronizedRange = inlineCompletion.range;
 	}
 
-	public toLiveInlineCompletion(): LiveInlineCompletion | undefined {
+	public toLiveInlineCompletion(): TrackedInlineCompletion | undefined {
 		return {
-			text: this.inlineCompletion.text,
+			insertText: this.inlineCompletion.insertText,
 			range: this.synchronizedRange,
 			command: this.inlineCompletion.command,
 			sourceProvider: this.inlineCompletion.sourceProvider,
 			sourceInlineCompletions: this.inlineCompletion.sourceInlineCompletions,
 			sourceInlineCompletion: this.inlineCompletion.sourceInlineCompletion,
+			snippetInfo: this.inlineCompletion.snippetInfo,
+			filterText: this.inlineCompletion.filterText,
+			additionalTextEdits: this.inlineCompletion.additionalTextEdits,
 		};
 	}
 }
 
-export interface LiveInlineCompletion extends NormalizedInlineCompletion {
-	sourceProvider: InlineCompletionsProvider;
-	sourceInlineCompletion: InlineCompletion;
-	sourceInlineCompletions: InlineCompletions;
-}
-
-/**
- * Contains no duplicated items.
-*/
-export interface LiveInlineCompletions extends InlineCompletions<LiveInlineCompletion> {
-	dispose(): void;
-}
-
-function getDefaultRange(position: Position, model: ITextModel): Range {
-	const word = model.getWordAtPosition(position);
-	const maxColumn = model.getLineMaxColumn(position.lineNumber);
-	// By default, always replace up until the end of the current line.
-	// This default might be subject to change!
-	return word
-		? new Range(position.lineNumber, word.startColumn, position.lineNumber, maxColumn)
-		: Range.fromPositions(position, position.with(undefined, maxColumn));
-}
-
 export async function provideInlineCompletions(
+	registry: LanguageFeatureRegistry<InlineCompletionsProvider>,
 	position: Position,
 	model: ITextModel,
 	context: InlineCompletionContext,
-	token: CancellationToken = CancellationToken.None
-): Promise<LiveInlineCompletions> {
+	token: CancellationToken = CancellationToken.None,
+	languageConfigurationService?: ILanguageConfigurationService
+): Promise<TrackedInlineCompletions> {
 	const defaultReplaceRange = getDefaultRange(position, model);
 
-	const providers = InlineCompletionsProviderRegistry.all(model);
+	const providers = registry.all(model);
 	const results = await Promise.all(
 		providers.map(
 			async provider => {
-				const completions = await provider.provideInlineCompletions(model, position, context, token);
+				const completions = await Promise.resolve(provider.provideInlineCompletions(model, position, context, token)).catch(onUnexpectedExternalError);
 				return ({
 					completions,
 					provider,
@@ -553,24 +746,95 @@ export async function provideInlineCompletions(
 		)
 	);
 
-	const itemsByHash = new Map<string, LiveInlineCompletion>();
+	const itemsByHash = new Map<string, TrackedInlineCompletion>();
 	for (const result of results) {
 		const completions = result.completions;
-		if (completions) {
-			for (const item of completions.items.map<LiveInlineCompletion>(item => ({
-				text: item.text,
-				range: item.range ? Range.lift(item.range) : defaultReplaceRange,
+		if (!completions) {
+			continue;
+		}
+
+		for (const item of completions.items) {
+			let range = item.range ? Range.lift(item.range) : defaultReplaceRange;
+
+			if (range.startLineNumber !== range.endLineNumber) {
+				// Ignore invalid ranges.
+				continue;
+			}
+
+			let insertText: string;
+			let snippetInfo: {
+				snippet: string;
+				/* Could be different than the main range */
+				range: Range;
+			}
+				| undefined;
+
+			if (typeof item.insertText === 'string') {
+				insertText = item.insertText;
+
+				if (languageConfigurationService && item.completeBracketPairs) {
+					insertText = closeBrackets(
+						insertText,
+						range.getStartPosition(),
+						model,
+						languageConfigurationService
+					);
+
+					// Modify range depending on if brackets are added or removed
+					const diff = insertText.length - item.insertText.length;
+					if (diff !== 0) {
+						range = new Range(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn + diff);
+					}
+				}
+
+				snippetInfo = undefined;
+			} else if ('snippet' in item.insertText) {
+				const preBracketCompletionLength = item.insertText.snippet.length;
+
+				if (languageConfigurationService && item.completeBracketPairs) {
+					item.insertText.snippet = closeBrackets(
+						item.insertText.snippet,
+						range.getStartPosition(),
+						model,
+						languageConfigurationService
+					);
+
+					// Modify range depending on if brackets are added or removed
+					const diff = item.insertText.snippet.length - preBracketCompletionLength;
+					if (diff !== 0) {
+						range = new Range(range.startLineNumber, range.startColumn, range.endLineNumber, range.endColumn + diff);
+					}
+				}
+
+				const snippet = new SnippetParser().parse(item.insertText.snippet);
+
+				if (snippet.children.length === 1 && snippet.children[0] instanceof Text) {
+					insertText = snippet.children[0].value;
+					snippetInfo = undefined;
+				} else {
+					insertText = snippet.toString();
+					snippetInfo = {
+						snippet: item.insertText.snippet,
+						range: range
+					};
+				}
+			} else {
+				assertNever(item.insertText);
+			}
+
+			const trackedItem: TrackedInlineCompletion = ({
+				insertText,
+				snippetInfo,
+				range,
 				command: item.command,
 				sourceProvider: result.provider,
 				sourceInlineCompletions: completions,
-				sourceInlineCompletion: item
-			}))) {
-				if (item.range.startLineNumber !== item.range.endLineNumber) {
-					// Ignore invalid ranges.
-					continue;
-				}
-				itemsByHash.set(JSON.stringify({ text: item.text, range: item.range }), item);
-			}
+				sourceInlineCompletion: item,
+				filterText: item.filterText || insertText,
+				additionalTextEdits: item.additionalTextEdits || getReadonlyEmptyArray()
+			});
+
+			itemsByHash.set(JSON.stringify({ insertText, range: item.range }), trackedItem);
 		}
 	}
 
@@ -585,27 +849,53 @@ export async function provideInlineCompletions(
 }
 
 /**
- * Shrinks the range if the text has a suffix/prefix that agrees with the text buffer.
- * E.g. text buffer: `ab[cdef]ghi`, [...] is the replace range, `cxyzf` is the new text.
- * Then the minimized inline completion has range `abc[de]fghi` and text `xyz`.
- */
-export function minimizeInlineCompletion(model: ITextModel, inlineCompletion: NormalizedInlineCompletion): NormalizedInlineCompletion;
-export function minimizeInlineCompletion(model: ITextModel, inlineCompletion: NormalizedInlineCompletion | undefined): NormalizedInlineCompletion | undefined;
-export function minimizeInlineCompletion(model: ITextModel, inlineCompletion: NormalizedInlineCompletion | undefined): NormalizedInlineCompletion | undefined {
-	if (!inlineCompletion) {
-		return inlineCompletion;
+ * Contains no duplicated items and can be disposed.
+*/
+export interface TrackedInlineCompletions {
+	readonly items: readonly TrackedInlineCompletion[];
+	dispose(): void;
+}
+
+/**
+ * A normalized inline completion that tracks which inline completion it has been constructed from.
+*/
+export interface TrackedInlineCompletion extends NormalizedInlineCompletion {
+	sourceProvider: InlineCompletionsProvider;
+
+	/**
+	 * A reference to the original inline completion this inline completion has been constructed from.
+	 * Used for event data to ensure referential equality.
+	*/
+	sourceInlineCompletion: InlineCompletion;
+
+	/**
+	 * A reference to the original inline completion list this inline completion has been constructed from.
+	 * Used for event data to ensure referential equality.
+	*/
+	sourceInlineCompletions: InlineCompletions;
+}
+
+function getDefaultRange(position: Position, model: ITextModel): Range {
+	const word = model.getWordAtPosition(position);
+	const maxColumn = model.getLineMaxColumn(position.lineNumber);
+	// By default, always replace up until the end of the current line.
+	// This default might be subject to change!
+	return word
+		? new Range(position.lineNumber, word.startColumn, position.lineNumber, maxColumn)
+		: Range.fromPositions(position, position.with(undefined, maxColumn));
+}
+
+function closeBrackets(text: string, position: Position, model: ITextModel, languageConfigurationService: ILanguageConfigurationService): string {
+	const lineStart = model.getLineContent(position.lineNumber).substring(0, position.column - 1);
+	const newLine = lineStart + text;
+
+	const newTokens = model.tokenization.tokenizeLineWithEdit(position, newLine.length - (position.column - 1), text);
+	const slicedTokens = newTokens?.sliceAndInflate(position.column - 1, newLine.length, 0);
+	if (!slicedTokens) {
+		return text;
 	}
-	const valueToReplace = model.getValueInRange(inlineCompletion.range);
-	const commonPrefixLen = commonPrefixLength(valueToReplace, inlineCompletion.text);
-	const startOffset = model.getOffsetAt(inlineCompletion.range.getStartPosition()) + commonPrefixLen;
-	const start = model.getPositionAt(startOffset);
 
-	const remainingValueToReplace = valueToReplace.substr(commonPrefixLen);
-	const commonSuffixLen = commonSuffixLength(remainingValueToReplace, inlineCompletion.text);
-	const end = model.getPositionAt(Math.max(startOffset, model.getOffsetAt(inlineCompletion.range.getEndPosition()) - commonSuffixLen));
+	const newText = fixBracketsInLine(slicedTokens, languageConfigurationService);
 
-	return {
-		range: Range.fromPositions(start, end),
-		text: inlineCompletion.text.substr(commonPrefixLen, inlineCompletion.text.length - commonPrefixLen - commonSuffixLen),
-	};
+	return newText;
 }

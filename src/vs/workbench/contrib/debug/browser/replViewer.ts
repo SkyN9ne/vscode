@@ -3,29 +3,30 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import severity from 'vs/base/common/severity';
 import * as dom from 'vs/base/browser/dom';
-import { IListAccessibilityProvider } from 'vs/base/browser/ui/list/listWidget';
-import { Variable } from 'vs/workbench/contrib/debug/common/debugModel';
-import { SimpleReplElement, RawObjectReplElement, ReplEvaluationInput, ReplEvaluationResult, ReplGroup } from 'vs/workbench/contrib/debug/common/replModel';
-import { CachedListVirtualDelegate } from 'vs/base/browser/ui/list/list';
-import { ITreeRenderer, ITreeNode, IAsyncDataSource } from 'vs/base/browser/ui/tree/tree';
-import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
-import { renderExpressionValue, AbstractExpressionsRenderer, IExpressionTemplateData, renderVariable, IInputBoxOptions } from 'vs/workbench/contrib/debug/browser/baseDebugView';
-import { handleANSIOutput } from 'vs/workbench/contrib/debug/browser/debugANSIHandling';
-import { ILabelService } from 'vs/platform/label/common/label';
-import { LinkDetector } from 'vs/workbench/contrib/debug/browser/linkDetector';
-import { IContextViewService } from 'vs/platform/contextview/browser/contextView';
-import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
-import { FuzzyScore, createMatches } from 'vs/base/common/filters';
-import { HighlightedLabel, IHighlight } from 'vs/base/browser/ui/highlightedlabel/highlightedLabel';
-import { IReplElementSource, IDebugService, IExpression, IReplElement, IDebugConfiguration, IDebugSession, IExpressionContainer } from 'vs/workbench/contrib/debug/common/debug';
-import { IDisposable, dispose } from 'vs/base/common/lifecycle';
-import { IThemeService, ThemeIcon } from 'vs/platform/theme/common/themeService';
-import { localize } from 'vs/nls';
 import { CountBadge } from 'vs/base/browser/ui/countBadge/countBadge';
-import { attachBadgeStyler } from 'vs/platform/theme/common/styler';
+import { HighlightedLabel, IHighlight } from 'vs/base/browser/ui/highlightedlabel/highlightedLabel';
+import { CachedListVirtualDelegate } from 'vs/base/browser/ui/list/list';
+import { IListAccessibilityProvider } from 'vs/base/browser/ui/list/listWidget';
+import { IAsyncDataSource, ITreeNode, ITreeRenderer } from 'vs/base/browser/ui/tree/tree';
+import { createMatches, FuzzyScore } from 'vs/base/common/filters';
+import { dispose, IDisposable } from 'vs/base/common/lifecycle';
+import { basename } from 'vs/base/common/path';
+import severity from 'vs/base/common/severity';
+import { localize } from 'vs/nls';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { IContextViewService } from 'vs/platform/contextview/browser/contextView';
+import { ILabelService } from 'vs/platform/label/common/label';
+import { defaultCountBadgeStyles } from 'vs/platform/theme/browser/defaultStyles';
+import { IThemeService, ThemeIcon } from 'vs/platform/theme/common/themeService';
+import { AbstractExpressionsRenderer, IExpressionTemplateData, IInputBoxOptions, renderExpressionValue, renderVariable } from 'vs/workbench/contrib/debug/browser/baseDebugView';
+import { handleANSIOutput } from 'vs/workbench/contrib/debug/browser/debugANSIHandling';
 import { debugConsoleEvaluationInput } from 'vs/workbench/contrib/debug/browser/debugIcons';
+import { LinkDetector } from 'vs/workbench/contrib/debug/browser/linkDetector';
+import { IDebugConfiguration, IDebugService, IDebugSession, IExpression, IExpressionContainer, IReplElement, IReplElementSource, IReplOptions } from 'vs/workbench/contrib/debug/common/debug';
+import { Variable } from 'vs/workbench/contrib/debug/common/debugModel';
+import { RawObjectReplElement, ReplEvaluationInput, ReplEvaluationResult, ReplGroup, SimpleReplElement } from 'vs/workbench/contrib/debug/common/replModel';
+import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 
 const $ = dom.$;
 
@@ -164,11 +165,10 @@ export class ReplSimpleElementsRenderer implements ITreeRenderer<SimpleReplEleme
 
 		data.container = container;
 		data.countContainer = dom.append(expression, $('.count-badge-wrapper'));
-		data.count = new CountBadge(data.countContainer);
+		data.count = new CountBadge(data.countContainer, {}, defaultCountBadgeStyles);
 		data.value = dom.append(expression, $('span.value'));
 		data.source = dom.append(expression, $('.source'));
 		data.toDispose = [];
-		data.toDispose.push(attachBadgeStyler(data.count, this.themeService));
 		data.toDispose.push(dom.addDisposableListener(data.source, 'click', e => {
 			e.preventDefault();
 			e.stopPropagation();
@@ -197,7 +197,7 @@ export class ReplSimpleElementsRenderer implements ITreeRenderer<SimpleReplEleme
 		templateData.value.appendChild(result);
 
 		templateData.value.classList.add((element.severity === severity.Warning) ? 'warn' : (element.severity === severity.Error) ? 'error' : (element.severity === severity.Ignore) ? 'ignore' : 'info');
-		templateData.source.textContent = element.sourceData ? `${element.sourceData.source.name}:${element.sourceData.lineNumber}` : '';
+		templateData.source.textContent = element.sourceData ? `${basename(element.sourceData.source.name)}:${element.sourceData.lineNumber}` : '';
 		templateData.source.title = element.sourceData ? `${this.labelService.getUriLabel(element.sourceData.source.uri)}:${element.sourceData.lineNumber}` : '';
 		templateData.getReplElementSource = () => element.sourceData;
 	}
@@ -232,13 +232,13 @@ export class ReplVariablesRenderer extends AbstractExpressionsRenderer {
 		private readonly linkDetector: LinkDetector,
 		@IDebugService debugService: IDebugService,
 		@IContextViewService contextViewService: IContextViewService,
-		@IThemeService themeService: IThemeService,
 	) {
-		super(debugService, contextViewService, themeService);
+		super(debugService, contextViewService);
 	}
 
 	protected renderExpression(expression: IExpression, data: IExpressionTemplateData, highlights: IHighlight[]): void {
 		renderVariable(expression as Variable, data, true, highlights, this.linkDetector);
+		data.expression.classList.toggle('nested-variable', isNestedVariable(expression));
 	}
 
 	protected getInputBoxOptions(expression: IExpression): IInputBoxOptions | undefined {
@@ -288,9 +288,16 @@ export class ReplRawObjectsRenderer implements ITreeRenderer<RawObjectReplElemen
 	}
 }
 
+function isNestedVariable(element: IReplElement) {
+	return element instanceof Variable && (element.parent instanceof ReplEvaluationResult || element.parent instanceof Variable);
+}
+
 export class ReplDelegate extends CachedListVirtualDelegate<IReplElement> {
 
-	constructor(private configurationService: IConfigurationService) {
+	constructor(
+		private readonly configurationService: IConfigurationService,
+		private readonly replOptions: IReplOptions
+	) {
 		super();
 	}
 
@@ -304,22 +311,24 @@ export class ReplDelegate extends CachedListVirtualDelegate<IReplElement> {
 		return super.getHeight(element);
 	}
 
+	/**
+	 * With wordWrap enabled, this is an estimate. With wordWrap disabled, this is the real height that the list will use.
+	 */
 	protected estimateHeight(element: IReplElement, ignoreValueLength = false): number {
-		const config = this.configurationService.getValue<IDebugConfiguration>('debug');
-		const rowHeight = Math.ceil(1.3 * config.console.fontSize);
-		const countNumberOfLines = (str: string) => Math.max(1, (str && str.match(/\r\n|\n/g) || []).length);
+		const lineHeight = this.replOptions.replConfiguration.lineHeight;
+		const countNumberOfLines = (str: string) => str.match(/\n/g)?.length ?? 0;
 		const hasValue = (e: any): e is { value: string } => typeof e.value === 'string';
 
-		// Calculate a rough overestimation for the height
-		// For every 70 characters increase the number of lines needed beyond the first
-		if (hasValue(element) && !(element instanceof Variable)) {
+		if (hasValue(element) && !isNestedVariable(element)) {
 			const value = element.value;
-			const valueRows = countNumberOfLines(value) + (ignoreValueLength ? 0 : Math.floor(value.length / 70));
+			const valueRows = countNumberOfLines(value)
+				+ (ignoreValueLength ? 0 : Math.floor(value.length / 70)) // Make an estimate for wrapping
+				+ (element instanceof SimpleReplElement ? 0 : 1); // A SimpleReplElement ends in \n if it's a complete line
 
-			return valueRows * rowHeight;
+			return Math.max(valueRows, 1) * lineHeight;
 		}
 
-		return rowHeight;
+		return lineHeight;
 	}
 
 	getTemplateId(element: IReplElement): string {
@@ -344,8 +353,8 @@ export class ReplDelegate extends CachedListVirtualDelegate<IReplElement> {
 	}
 
 	hasDynamicHeight(element: IReplElement): boolean {
-		if (element instanceof Variable) {
-			// Variables should always be in one line #111843
+		if (isNestedVariable(element)) {
+			// Nested variables should always be in one line #111843
 			return false;
 		}
 		// Empty elements should not have dynamic height since they will be invisible

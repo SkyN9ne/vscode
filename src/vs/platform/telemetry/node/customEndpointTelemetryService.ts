@@ -8,6 +8,7 @@ import { Client as TelemetryClient } from 'vs/base/parts/ipc/node/ipc.cp';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IEnvironmentService } from 'vs/platform/environment/common/environment';
 import { ILoggerService } from 'vs/platform/log/common/log';
+import { IProductService } from 'vs/platform/product/common/productService';
 import { ICustomEndpointTelemetryService, ITelemetryData, ITelemetryEndpoint, ITelemetryService } from 'vs/platform/telemetry/common/telemetry';
 import { TelemetryAppenderClient } from 'vs/platform/telemetry/common/telemetryIpc';
 import { TelemetryLogAppender } from 'vs/platform/telemetry/common/telemetryLogAppender';
@@ -22,6 +23,7 @@ export class CustomEndpointTelemetryService implements ICustomEndpointTelemetryS
 		@ITelemetryService private readonly telemetryService: ITelemetryService,
 		@ILoggerService private readonly loggerService: ILoggerService,
 		@IEnvironmentService private readonly environmentService: IEnvironmentService,
+		@IProductService private readonly productService: IProductService
 	) { }
 
 	private async getCustomTelemetryService(endpoint: ITelemetryEndpoint): Promise<ITelemetryService> {
@@ -32,7 +34,7 @@ export class CustomEndpointTelemetryService implements ICustomEndpointTelemetryS
 			telemetryInfo['common.vscodesessionid'] = sessionId;
 			const args = [endpoint.id, JSON.stringify(telemetryInfo), endpoint.aiKey];
 			const client = new TelemetryClient(
-				FileAccess.asFileUri('bootstrap-fork', require).fsPath,
+				FileAccess.asFileUri('bootstrap-fork').fsPath,
 				{
 					serverName: 'Debug Telemetry',
 					timeout: 1000 * 60 * 5,
@@ -54,7 +56,7 @@ export class CustomEndpointTelemetryService implements ICustomEndpointTelemetryS
 			this.customTelemetryServices.set(endpoint.id, new TelemetryService({
 				appenders,
 				sendErrorTelemetry: endpoint.sendErrorTelemetry
-			}, this.configurationService));
+			}, this.configurationService, this.productService));
 		}
 
 		return this.customTelemetryServices.get(endpoint.id)!;

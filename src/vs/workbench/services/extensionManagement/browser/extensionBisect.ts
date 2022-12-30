@@ -7,7 +7,7 @@ import { localize } from 'vs/nls';
 import { IExtensionManagementService, IGlobalExtensionEnablementService, ILocalExtension } from 'vs/platform/extensionManagement/common/extensionManagement';
 import { IStorageService, StorageScope, StorageTarget } from 'vs/platform/storage/common/storage';
 import { ExtensionType, IExtension, isResolverExtension } from 'vs/platform/extensions/common/extensions';
-import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
+import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { INotificationService, IPromptChoice, Severity } from 'vs/platform/notification/common/notification';
 import { IHostService } from 'vs/workbench/services/host/browser/host';
 import { createDecorator, ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
@@ -23,6 +23,8 @@ import { IProductService } from 'vs/platform/product/common/productService';
 import { IWorkbenchIssueService } from 'vs/workbench/services/issue/common/issue';
 import { IWorkbenchEnvironmentService } from 'vs/workbench/services/environment/common/environmentService';
 import { areSameExtensions } from 'vs/platform/extensionManagement/common/extensionManagementUtil';
+import { Categories } from 'vs/platform/action/common/actionCommonCategories';
+import { IWorkbenchExtensionEnablementService } from 'vs/workbench/services/extensionManagement/common/extensionManagement';
 
 // --- bisect service
 
@@ -36,7 +38,7 @@ export interface IExtensionBisectService {
 	isActive: boolean;
 	disabledCount: number;
 	start(extensions: ILocalExtension[]): Promise<void>;
-	next(seeingBad: boolean): Promise<{ id: string, bad: boolean } | undefined>;
+	next(seeingBad: boolean): Promise<{ id: string; bad: boolean } | undefined>;
 	reset(): Promise<void>;
 }
 
@@ -77,7 +79,7 @@ class ExtensionBisectService implements IExtensionBisectService {
 		@IStorageService private readonly _storageService: IStorageService,
 		@IWorkbenchEnvironmentService private readonly _envService: IWorkbenchEnvironmentService
 	) {
-		const raw = _storageService.get(ExtensionBisectService._storageKey, StorageScope.GLOBAL);
+		const raw = _storageService.get(ExtensionBisectService._storageKey, StorageScope.APPLICATION);
 		this._state = BisectState.fromJSON(raw);
 
 		if (this._state) {
@@ -125,11 +127,11 @@ class ExtensionBisectService implements IExtensionBisectService {
 		}
 		const extensionIds = extensions.map(ext => ext.identifier.id);
 		const newState = new BisectState(extensionIds, 0, extensionIds.length, 0);
-		this._storageService.store(ExtensionBisectService._storageKey, JSON.stringify(newState), StorageScope.GLOBAL, StorageTarget.MACHINE);
+		this._storageService.store(ExtensionBisectService._storageKey, JSON.stringify(newState), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		await this._storageService.flush();
 	}
 
-	async next(seeingBad: boolean): Promise<{ id: string; bad: boolean; } | undefined> {
+	async next(seeingBad: boolean): Promise<{ id: string; bad: boolean } | undefined> {
 		if (!this._state) {
 			throw new Error('invalid state');
 		}
@@ -149,24 +151,24 @@ class ExtensionBisectService implements IExtensionBisectService {
 			seeingBad ? this._state.low : this._state.mid,
 			seeingBad ? this._state.mid : this._state.high,
 		);
-		this._storageService.store(ExtensionBisectService._storageKey, JSON.stringify(nextState), StorageScope.GLOBAL, StorageTarget.MACHINE);
+		this._storageService.store(ExtensionBisectService._storageKey, JSON.stringify(nextState), StorageScope.APPLICATION, StorageTarget.MACHINE);
 		await this._storageService.flush();
 		return undefined;
 	}
 
 	async reset(): Promise<void> {
-		this._storageService.remove(ExtensionBisectService._storageKey, StorageScope.GLOBAL);
+		this._storageService.remove(ExtensionBisectService._storageKey, StorageScope.APPLICATION);
 		await this._storageService.flush();
 	}
 }
 
-registerSingleton(IExtensionBisectService, ExtensionBisectService, true);
+registerSingleton(IExtensionBisectService, ExtensionBisectService, InstantiationType.Delayed);
 
 // --- bisect UI
 
 class ExtensionBisectUi {
 
-	static ctxIsBisectActive = new RawContextKey('isExtensionBisectActive', false);
+	static ctxIsBisectActive = new RawContextKey<boolean>('isExtensionBisectActive', false);
 
 	constructor(
 		@IContextKeyService contextKeyService: IContextKeyService,
@@ -218,14 +220,14 @@ registerAction2(class extends Action2 {
 		super({
 			id: 'extension.bisect.start',
 			title: { value: localize('title.start', "Start Extension Bisect"), original: 'Start Extension Bisect' },
-			category: localize('help', "Help"),
+			category: Categories.Help,
 			f1: true,
 			precondition: ExtensionBisectUi.ctxIsBisectActive.negate(),
 			menu: {
 				id: MenuId.ViewContainerTitle,
 				when: ContextKeyExpr.equals('viewContainer', 'workbench.view.extensions'),
 				group: '2_enablement',
-				order: 3
+				order: 4
 			}
 		});
 	}
@@ -234,11 +236,10 @@ registerAction2(class extends Action2 {
 		const dialogService = accessor.get(IDialogService);
 		const hostService = accessor.get(IHostService);
 		const extensionManagement = accessor.get(IExtensionManagementService);
-		const extensionEnablementService = accessor.get(IGlobalExtensionEnablementService);
+		const extensionEnablementService = accessor.get(IWorkbenchExtensionEnablementService);
 		const extensionsBisect = accessor.get(IExtensionBisectService);
 
-		const disabled = new Set(extensionEnablementService.getDisabledExtensions().map(id => id.id));
-		const extensions = (await extensionManagement.getInstalled(ExtensionType.User)).filter(ext => !disabled.has(ext.identifier.id));
+		const extensions = (await extensionManagement.getInstalled(ExtensionType.User)).filter(ext => extensionEnablementService.isEnabled(ext));
 
 		const res = await dialogService.confirm({
 			message: localize('msg.start', "Extension Bisect"),
@@ -257,8 +258,8 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'extension.bisect.next',
-			title: localize('title.isBad', "Continue Extension Bisect"),
-			category: localize('help', "Help"),
+			title: { value: localize('title.isBad', "Continue Extension Bisect"), original: 'Continue Extension Bisect' },
+			category: Categories.Help,
 			f1: true,
 			precondition: ExtensionBisectUi.ctxIsBisectActive
 		});
@@ -344,8 +345,8 @@ registerAction2(class extends Action2 {
 	constructor() {
 		super({
 			id: 'extension.bisect.stop',
-			title: localize('title.stop', "Stop Extension Bisect"),
-			category: localize('help', "Help"),
+			title: { value: localize('title.stop', "Stop Extension Bisect"), original: 'Stop Extension Bisect' },
+			category: Categories.Help,
 			f1: true,
 			precondition: ExtensionBisectUi.ctxIsBisectActive
 		});

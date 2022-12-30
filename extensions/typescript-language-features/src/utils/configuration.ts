@@ -5,6 +5,7 @@
 
 import * as vscode from 'vscode';
 import * as objects from '../utils/objects';
+import * as Proto from '../protocol';
 
 export enum TsServerLogLevel {
 	Off,
@@ -15,7 +16,7 @@ export enum TsServerLogLevel {
 
 export namespace TsServerLogLevel {
 	export function fromString(value: string): TsServerLogLevel {
-		switch (value && value.toLowerCase()) {
+		switch (value?.toLowerCase()) {
 			case 'normal':
 				return TsServerLogLevel.Normal;
 			case 'terse':
@@ -52,12 +53,16 @@ export const enum SyntaxServerConfiguration {
 
 export class ImplicitProjectConfiguration {
 
+	public readonly target: string | undefined;
+	public readonly module: string | undefined;
 	public readonly checkJs: boolean;
 	public readonly experimentalDecorators: boolean;
 	public readonly strictNullChecks: boolean;
 	public readonly strictFunctionTypes: boolean;
 
 	constructor(configuration: vscode.WorkspaceConfiguration) {
+		this.target = ImplicitProjectConfiguration.readTarget(configuration);
+		this.module = ImplicitProjectConfiguration.readModule(configuration);
 		this.checkJs = ImplicitProjectConfiguration.readCheckJs(configuration);
 		this.experimentalDecorators = ImplicitProjectConfiguration.readExperimentalDecorators(configuration);
 		this.strictNullChecks = ImplicitProjectConfiguration.readImplicitStrictNullChecks(configuration);
@@ -66,6 +71,14 @@ export class ImplicitProjectConfiguration {
 
 	public isEqualTo(other: ImplicitProjectConfiguration): boolean {
 		return objects.equals(this, other);
+	}
+
+	private static readTarget(configuration: vscode.WorkspaceConfiguration): string | undefined {
+		return configuration.get<string>('js/ts.implicitProjectConfig.target');
+	}
+
+	private static readModule(configuration: vscode.WorkspaceConfiguration): string | undefined {
+		return configuration.get<string>('js/ts.implicitProjectConfig.module');
 	}
 
 	private static readCheckJs(configuration: vscode.WorkspaceConfiguration): boolean {
@@ -79,7 +92,7 @@ export class ImplicitProjectConfiguration {
 	}
 
 	private static readImplicitStrictNullChecks(configuration: vscode.WorkspaceConfiguration): boolean {
-		return configuration.get<boolean>('js/ts.implicitProjectConfig.strictNullChecks', false);
+		return configuration.get<boolean>('js/ts.implicitProjectConfig.strictNullChecks', true);
 	}
 
 	private static readImplicitStrictFunctionTypes(configuration: vscode.WorkspaceConfiguration): boolean {
@@ -100,7 +113,7 @@ export interface TypeScriptServiceConfiguration {
 	readonly enableProjectDiagnostics: boolean;
 	readonly maxTsServerMemory: number;
 	readonly enablePromptUseWorkspaceTsdk: boolean;
-	readonly watchOptions: protocol.WatchOptions | undefined;
+	readonly watchOptions: Proto.WatchOptions | undefined;
 	readonly includePackageJsonAutoImports: 'auto' | 'on' | 'off' | undefined;
 	readonly enableTsServerTracing: boolean;
 }
@@ -118,9 +131,9 @@ export abstract class BaseServiceConfigurationProvider implements ServiceConfigu
 	public loadFromWorkspace(): TypeScriptServiceConfiguration {
 		const configuration = vscode.workspace.getConfiguration();
 		return {
-			locale: this.extractLocale(configuration),
-			globalTsdk: this.extractGlobalTsdk(configuration),
-			localTsdk: this.extractLocalTsdk(configuration),
+			locale: this.readLocale(configuration),
+			globalTsdk: this.readGlobalTsdk(configuration),
+			localTsdk: this.readLocalTsdk(configuration),
 			npmLocation: this.readNpmLocation(configuration),
 			tsServerLogLevel: this.readTsServerLogLevel(configuration),
 			tsServerPluginPaths: this.readTsServerPluginPaths(configuration),
@@ -136,8 +149,8 @@ export abstract class BaseServiceConfigurationProvider implements ServiceConfigu
 		};
 	}
 
-	protected abstract extractGlobalTsdk(configuration: vscode.WorkspaceConfiguration): string | null;
-	protected abstract extractLocalTsdk(configuration: vscode.WorkspaceConfiguration): string | null;
+	protected abstract readGlobalTsdk(configuration: vscode.WorkspaceConfiguration): string | null;
+	protected abstract readLocalTsdk(configuration: vscode.WorkspaceConfiguration): string | null;
 
 	protected readTsServerLogLevel(configuration: vscode.WorkspaceConfiguration): TsServerLogLevel {
 		const setting = configuration.get<string>('typescript.tsserver.log', 'off');
@@ -156,8 +169,9 @@ export abstract class BaseServiceConfigurationProvider implements ServiceConfigu
 		return configuration.get<boolean>('typescript.disableAutomaticTypeAcquisition', false);
 	}
 
-	protected extractLocale(configuration: vscode.WorkspaceConfiguration): string | null {
-		return configuration.get<string | null>('typescript.locale', null);
+	protected readLocale(configuration: vscode.WorkspaceConfiguration): string | null {
+		const value = configuration.get<string>('typescript.locale', 'auto');
+		return !value || value === 'auto' ? null : value;
 	}
 
 	protected readUseSyntaxServer(configuration: vscode.WorkspaceConfiguration): SyntaxServerConfiguration {
@@ -183,8 +197,8 @@ export abstract class BaseServiceConfigurationProvider implements ServiceConfigu
 		return configuration.get<boolean>('typescript.tsserver.experimental.enableProjectDiagnostics', false);
 	}
 
-	protected readWatchOptions(configuration: vscode.WorkspaceConfiguration): protocol.WatchOptions | undefined {
-		return configuration.get<protocol.WatchOptions>('typescript.tsserver.watchOptions');
+	protected readWatchOptions(configuration: vscode.WorkspaceConfiguration): Proto.WatchOptions | undefined {
+		return configuration.get<Proto.WatchOptions>('typescript.tsserver.watchOptions');
 	}
 
 	protected readIncludePackageJsonAutoImports(configuration: vscode.WorkspaceConfiguration): 'auto' | 'on' | 'off' | undefined {
@@ -208,5 +222,4 @@ export abstract class BaseServiceConfigurationProvider implements ServiceConfigu
 	protected readEnableTsServerTracing(configuration: vscode.WorkspaceConfiguration): boolean {
 		return configuration.get<boolean>('typescript.tsserver.enableTracing', false);
 	}
-
 }

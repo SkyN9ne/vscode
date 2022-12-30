@@ -9,10 +9,9 @@ import { IScrollPosition, ScrollEvent, Scrollable, ScrollbarVisibility, INewScro
 import { ConfigurationChangedEvent, EditorOption } from 'vs/editor/common/config/editorOptions';
 import { ScrollType } from 'vs/editor/common/editorCommon';
 import { IEditorConfiguration } from 'vs/editor/common/config/editorConfiguration';
-import { LinesLayout, IEditorWhitespace, IWhitespaceChangeAccessor } from 'vs/editor/common/viewLayout/linesLayout';
-import { IPartialViewLinesViewportData } from 'vs/editor/common/viewLayout/viewLinesViewportData';
-import { IViewLayout, IViewWhitespaceViewportData, Viewport } from 'vs/editor/common/viewModel/viewModel';
-import { ContentSizeChangedEvent } from 'vs/editor/common/viewModel/viewModelEventDispatcher';
+import { LinesLayout } from 'vs/editor/common/viewLayout/linesLayout';
+import { IEditorWhitespace, IPartialViewLinesViewportData, IViewLayout, IViewWhitespaceViewportData, IWhitespaceChangeAccessor, Viewport } from 'vs/editor/common/viewModel';
+import { ContentSizeChangedEvent } from 'vs/editor/common/viewModelEventDispatcher';
 
 const SMOOTH_SCROLLING_TIME = 125;
 
@@ -83,7 +82,11 @@ class EditorScrollable extends Disposable {
 	constructor(smoothScrollDuration: number, scheduleAtNextAnimationFrame: (callback: () => void) => IDisposable) {
 		super();
 		this._dimensions = new EditorScrollDimensions(0, 0, 0, 0);
-		this._scrollable = this._register(new Scrollable(smoothScrollDuration, scheduleAtNextAnimationFrame));
+		this._scrollable = this._register(new Scrollable({
+			forceIntegerValues: true,
+			smoothScrollDuration,
+			scheduleAtNextAnimationFrame
+		}));
 		this.onDidScroll = this._scrollable.onScroll;
 	}
 
@@ -305,8 +308,8 @@ export class ViewLayout extends Disposable implements IViewLayout {
 		const options = this._configuration.options;
 		const wrappingInfo = options.get(EditorOption.wrappingInfo);
 		const fontInfo = options.get(EditorOption.fontInfo);
+		const layoutInfo = options.get(EditorOption.layoutInfo);
 		if (wrappingInfo.isViewportWrapping) {
-			const layoutInfo = options.get(EditorOption.layoutInfo);
 			const minimap = options.get(EditorOption.minimap);
 			if (maxLineWidth > layoutInfo.contentWidth + fontInfo.typicalHalfwidthCharacterWidth) {
 				// This is a case where viewport wrapping is on, but the line extends above the viewport
@@ -319,7 +322,7 @@ export class ViewLayout extends Disposable implements IViewLayout {
 		} else {
 			const extraHorizontalSpace = options.get(EditorOption.scrollBeyondLastColumn) * fontInfo.typicalHalfwidthCharacterWidth;
 			const whitespaceMinWidth = this._linesLayout.getWhitespaceMinWidth();
-			return Math.max(maxLineWidth + extraHorizontalSpace, whitespaceMinWidth);
+			return Math.max(maxLineWidth + extraHorizontalSpace + layoutInfo.verticalScrollbarWidth, whitespaceMinWidth);
 		}
 	}
 
@@ -339,7 +342,7 @@ export class ViewLayout extends Disposable implements IViewLayout {
 
 	// ---- view state
 
-	public saveState(): { scrollTop: number; scrollTopWithoutViewZones: number; scrollLeft: number; } {
+	public saveState(): { scrollTop: number; scrollTopWithoutViewZones: number; scrollLeft: number } {
 		const currentScrollPosition = this._scrollable.getFutureScrollPosition();
 		const scrollTop = currentScrollPosition.scrollTop;
 		const firstLineNumberInViewport = this._linesLayout.getLineNumberAtOrAfterVerticalOffset(scrollTop);
@@ -351,7 +354,7 @@ export class ViewLayout extends Disposable implements IViewLayout {
 		};
 	}
 
-	// ---- IVerticalLayoutProvider
+	// ----
 	public changeWhitespace(callback: (accessor: IWhitespaceChangeAccessor) => void): boolean {
 		const hadAChange = this._linesLayout.changeWhitespace(callback);
 		if (hadAChange) {
@@ -359,8 +362,11 @@ export class ViewLayout extends Disposable implements IViewLayout {
 		}
 		return hadAChange;
 	}
-	public getVerticalOffsetForLineNumber(lineNumber: number): number {
-		return this._linesLayout.getVerticalOffsetForLineNumber(lineNumber);
+	public getVerticalOffsetForLineNumber(lineNumber: number, includeViewZones: boolean = false): number {
+		return this._linesLayout.getVerticalOffsetForLineNumber(lineNumber, includeViewZones);
+	}
+	public getVerticalOffsetAfterLineNumber(lineNumber: number, includeViewZones: boolean = false): number {
+		return this._linesLayout.getVerticalOffsetAfterLineNumber(lineNumber, includeViewZones);
 	}
 	public isAfterLines(verticalOffset: number): boolean {
 		return this._linesLayout.isAfterLines(verticalOffset);
@@ -402,7 +408,7 @@ export class ViewLayout extends Disposable implements IViewLayout {
 		return this._linesLayout.getWhitespaces();
 	}
 
-	// ---- IScrollingProvider
+	// ----
 
 	public getContentWidth(): number {
 		const scrollDimensions = this._scrollable.getScrollDimensions();

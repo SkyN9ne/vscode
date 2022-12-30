@@ -3,8 +3,6 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { IAction } from 'vs/base/common/actions';
-
 export interface ErrorListenerCallback {
 	(error: any): void;
 }
@@ -25,6 +23,10 @@ export class ErrorHandler {
 		this.unexpectedErrorHandler = function (e: any) {
 			setTimeout(() => {
 				if (e.stack) {
+					if (ErrorNoTelemetry.isErrorNoTelemetry(e)) {
+						throw new ErrorNoTelemetry(e.message + '\n\n' + e.stack);
+					}
+
 					throw new Error(e.message + '\n\n' + e.stack);
 				}
 
@@ -97,19 +99,21 @@ export interface SerializedError {
 	readonly name: string;
 	readonly message: string;
 	readonly stack: string;
+	readonly noTelemetry: boolean;
 }
 
 export function transformErrorForSerialization(error: Error): SerializedError;
 export function transformErrorForSerialization(error: any): any;
 export function transformErrorForSerialization(error: any): any {
 	if (error instanceof Error) {
-		let { name, message } = error;
+		const { name, message } = error;
 		const stack: string = (<any>error).stacktrace || (<any>error).stack;
 		return {
 			$isError: true,
 			name,
 			message,
-			stack
+			stack,
+			noTelemetry: ErrorNoTelemetry.isErrorNoTelemetry(error)
 		};
 	}
 
@@ -119,15 +123,15 @@ export function transformErrorForSerialization(error: any): any {
 
 // see https://github.com/v8/v8/wiki/Stack%20Trace%20API#basic-stack-traces
 export interface V8CallSite {
-	getThis(): any;
-	getTypeName(): string;
-	getFunction(): string;
-	getFunctionName(): string;
-	getMethodName(): string;
-	getFileName(): string;
-	getLineNumber(): number;
-	getColumnNumber(): number;
-	getEvalOrigin(): string;
+	getThis(): unknown;
+	getTypeName(): string | null;
+	getFunction(): Function | undefined;
+	getFunctionName(): string | null;
+	getMethodName(): string | null;
+	getFileName(): string | null;
+	getLineNumber(): number | null;
+	getColumnNumber(): number | null;
+	getEvalOrigin(): string | undefined;
 	isToplevel(): boolean;
 	isEval(): boolean;
 	isNative(): boolean;
@@ -157,7 +161,7 @@ export class CancellationError extends Error {
 }
 
 /**
- * @deprecated uses {@link CancellationError}
+ * @deprecated use {@link CancellationError `new CancellationError()`} instead
  */
 export function canceled(): Error {
 	const error = new Error(canceledName);
@@ -231,26 +235,46 @@ export class ExpectedError extends Error {
 	readonly isExpected = true;
 }
 
-export interface IErrorOptions {
-	actions?: readonly IAction[];
-}
+/**
+ * Error that when thrown won't be logged in telemetry as an unhandled error.
+ */
+export class ErrorNoTelemetry extends Error {
+	override readonly name: string;
 
-export interface IErrorWithActions {
-	actions?: readonly IAction[];
-}
-
-export function isErrorWithActions(obj: unknown): obj is IErrorWithActions {
-	const candidate = obj as IErrorWithActions | undefined;
-
-	return candidate instanceof Error && Array.isArray(candidate.actions);
-}
-
-export function createErrorWithActions(message: string, options: IErrorOptions = Object.create(null)): Error & IErrorWithActions {
-	const result = new Error(message);
-
-	if (options.actions) {
-		(result as IErrorWithActions).actions = options.actions;
+	constructor(msg?: string) {
+		super(msg);
+		this.name = 'CodeExpectedError';
 	}
 
-	return result;
+	public static fromError(err: Error): ErrorNoTelemetry {
+		if (err instanceof ErrorNoTelemetry) {
+			return err;
+		}
+
+		const result = new ErrorNoTelemetry();
+		result.message = err.message;
+		result.stack = err.stack;
+		return result;
+	}
+
+	public static isErrorNoTelemetry(err: Error): err is ErrorNoTelemetry {
+		return err.name === 'CodeExpectedError';
+	}
+}
+
+/**
+ * This error indicates a bug.
+ * Do not throw this for invalid user input.
+ * Only catch this error to recover gracefully from bugs.
+ */
+export class BugIndicatingError extends Error {
+	constructor(message?: string) {
+		super(message || 'An unexpected bug occurred.');
+		Object.setPrototypeOf(this, BugIndicatingError.prototype);
+
+		// Because we know for sure only buggy code throws this,
+		// we definitely want to break here and fix the bug.
+		// eslint-disable-next-line no-debugger
+		debugger;
+	}
 }

@@ -4,211 +4,23 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { CancellationToken } from 'vs/base/common/cancellation';
+import { Codicon, CSSIcon } from 'vs/base/common/codicons';
 import { Color } from 'vs/base/common/color';
+import { VSDataTransfer } from 'vs/base/common/dataTransfer';
 import { Event } from 'vs/base/common/event';
 import { IMarkdownString } from 'vs/base/common/htmlContent';
 import { IDisposable } from 'vs/base/common/lifecycle';
 import { URI, UriComponents } from 'vs/base/common/uri';
+import { ISingleEditOperation } from 'vs/editor/common/core/editOperation';
 import { IPosition, Position } from 'vs/editor/common/core/position';
 import { IRange, Range } from 'vs/editor/common/core/range';
 import { Selection } from 'vs/editor/common/core/selection';
+import { LanguageId } from 'vs/editor/common/encodedTokenAttributes';
 import * as model from 'vs/editor/common/model';
-import { LanguageFeatureRegistry } from 'vs/editor/common/languageFeatureRegistry';
 import { TokenizationRegistry as TokenizationRegistryImpl } from 'vs/editor/common/tokenizationRegistry';
 import { ExtensionIdentifier } from 'vs/platform/extensions/common/extensions';
 import { IMarkerData } from 'vs/platform/markers/common/markers';
-import { Codicon, CSSIcon } from 'vs/base/common/codicons';
 import { ThemeIcon } from 'vs/platform/theme/common/themeService';
-import { ISingleEditOperation } from 'vs/editor/common/core/editOperation';
-
-/**
- * Open ended enum at runtime
- * @internal
- */
-export const enum LanguageId {
-	Null = 0,
-	PlainText = 1
-}
-
-/**
- * A font style. Values are 2^x such that a bit mask can be used.
- * @internal
- */
-export const enum FontStyle {
-	NotSet = -1,
-	None = 0,
-	Italic = 1,
-	Bold = 2,
-	Underline = 4,
-	Strikethrough = 8,
-}
-
-/**
- * Open ended enum at runtime
- * @internal
- */
-export const enum ColorId {
-	None = 0,
-	DefaultForeground = 1,
-	DefaultBackground = 2
-}
-
-/**
- * A standard token type.
- * @internal
- */
-export const enum StandardTokenType {
-	Other = 0,
-	Comment = 1,
-	String = 2,
-	RegEx = 3
-}
-
-/**
- * Helpers to manage the "collapsed" metadata of an entire StackElement stack.
- * The following assumptions have been made:
- *  - languageId < 256 => needs 8 bits
- *  - unique color count < 512 => needs 9 bits
- *
- * The binary format is:
- * - -------------------------------------------
- *     3322 2222 2222 1111 1111 1100 0000 0000
- *     1098 7654 3210 9876 5432 1098 7654 3210
- * - -------------------------------------------
- *     xxxx xxxx xxxx xxxx xxxx xxxx xxxx xxxx
- *     bbbb bbbb bfff ffff ffFF FFTT LLLL LLLL
- * - -------------------------------------------
- *  - L = LanguageId (8 bits)
- *  - T = StandardTokenType (2 bits)
- *  - F = FontStyle (4 bits)
- *  - f = foreground color (9 bits)
- *  - b = background color (9 bits)
- *
- * @internal
- */
-export const enum MetadataConsts {
-	LANGUAGEID_MASK = 0b00000000000000000000000011111111,
-	TOKEN_TYPE_MASK = 0b00000000000000000000001100000000,
-	FONT_STYLE_MASK = 0b00000000000000000011110000000000,
-	FOREGROUND_MASK = 0b00000000011111111100000000000000,
-	BACKGROUND_MASK = 0b11111111100000000000000000000000,
-
-	ITALIC_MASK = 0b00000000000000000000010000000000,
-	BOLD_MASK = 0b00000000000000000000100000000000,
-	UNDERLINE_MASK = 0b00000000000000000001000000000000,
-	STRIKETHROUGH_MASK = 0b00000000000000000010000000000000,
-
-	// Semantic tokens cannot set the language id, so we can
-	// use the first 8 bits for control purposes
-	SEMANTIC_USE_ITALIC = 0b00000000000000000000000000000001,
-	SEMANTIC_USE_BOLD = 0b00000000000000000000000000000010,
-	SEMANTIC_USE_UNDERLINE = 0b00000000000000000000000000000100,
-	SEMANTIC_USE_STRIKETHROUGH = 0b00000000000000000000000000001000,
-	SEMANTIC_USE_FOREGROUND = 0b00000000000000000000000000010000,
-	SEMANTIC_USE_BACKGROUND = 0b00000000000000000000000000100000,
-
-	LANGUAGEID_OFFSET = 0,
-	TOKEN_TYPE_OFFSET = 8,
-	FONT_STYLE_OFFSET = 10,
-	FOREGROUND_OFFSET = 14,
-	BACKGROUND_OFFSET = 23
-}
-
-/**
- * @internal
- */
-export class TokenMetadata {
-
-	public static getLanguageId(metadata: number): LanguageId {
-		return (metadata & MetadataConsts.LANGUAGEID_MASK) >>> MetadataConsts.LANGUAGEID_OFFSET;
-	}
-
-	public static getTokenType(metadata: number): StandardTokenType {
-		return (metadata & MetadataConsts.TOKEN_TYPE_MASK) >>> MetadataConsts.TOKEN_TYPE_OFFSET;
-	}
-
-	public static getFontStyle(metadata: number): FontStyle {
-		return (metadata & MetadataConsts.FONT_STYLE_MASK) >>> MetadataConsts.FONT_STYLE_OFFSET;
-	}
-
-	public static getForeground(metadata: number): ColorId {
-		return (metadata & MetadataConsts.FOREGROUND_MASK) >>> MetadataConsts.FOREGROUND_OFFSET;
-	}
-
-	public static getBackground(metadata: number): ColorId {
-		return (metadata & MetadataConsts.BACKGROUND_MASK) >>> MetadataConsts.BACKGROUND_OFFSET;
-	}
-
-	public static getClassNameFromMetadata(metadata: number): string {
-		const foreground = this.getForeground(metadata);
-		let className = 'mtk' + foreground;
-
-		const fontStyle = this.getFontStyle(metadata);
-		if (fontStyle & FontStyle.Italic) {
-			className += ' mtki';
-		}
-		if (fontStyle & FontStyle.Bold) {
-			className += ' mtkb';
-		}
-		if (fontStyle & FontStyle.Underline) {
-			className += ' mtku';
-		}
-		if (fontStyle & FontStyle.Strikethrough) {
-			className += ' mtks';
-		}
-
-		return className;
-	}
-
-	public static getInlineStyleFromMetadata(metadata: number, colorMap: string[]): string {
-		const foreground = this.getForeground(metadata);
-		const fontStyle = this.getFontStyle(metadata);
-
-		let result = `color: ${colorMap[foreground]};`;
-		if (fontStyle & FontStyle.Italic) {
-			result += 'font-style: italic;';
-		}
-		if (fontStyle & FontStyle.Bold) {
-			result += 'font-weight: bold;';
-		}
-		let textDecoration = '';
-		if (fontStyle & FontStyle.Underline) {
-			textDecoration += ' underline';
-		}
-		if (fontStyle & FontStyle.Strikethrough) {
-			textDecoration += ' line-through';
-		}
-		if (textDecoration) {
-			result += `text-decoration:${textDecoration};`;
-
-		}
-		return result;
-	}
-
-	public static getPresentationFromMetadata(metadata: number): ITokenPresentation {
-		const foreground = this.getForeground(metadata);
-		const fontStyle = this.getFontStyle(metadata);
-
-		return {
-			foreground: foreground,
-			italic: Boolean(fontStyle & FontStyle.Italic),
-			bold: Boolean(fontStyle & FontStyle.Bold),
-			underline: Boolean(fontStyle & FontStyle.Underline),
-			strikethrough: Boolean(fontStyle & FontStyle.Strikethrough),
-		};
-	}
-}
-
-/**
- * @internal
- */
-export interface ITokenPresentation {
-	foreground: ColorId;
-	italic: boolean;
-	bold: boolean;
-	underline: boolean;
-	strikethrough: boolean;
-}
 
 /**
  * @internal
@@ -573,6 +385,8 @@ export const enum CompletionItemTag {
 }
 
 export const enum CompletionItemInsertTextRule {
+	None = 0,
+
 	/**
 	 * Adjust whitespace/indentation of multiline insert texts to
 	 * match the current line indentation.
@@ -674,6 +488,10 @@ export interface CompletionItem {
 	 * A command that should be run upon acceptance of this item.
 	 */
 	command?: Command;
+	/**
+	 * @internal
+	 */
+	extensionId?: ExtensionIdentifier;
 
 	/**
 	 * @internal
@@ -787,8 +605,24 @@ export interface InlineCompletion {
 	 * The text to insert.
 	 * If the text contains a line break, the range must end at the end of a line.
 	 * If existing text should be replaced, the existing text must be a prefix of the text to insert.
+	 *
+	 * The text can also be a snippet. In that case, a preview with default parameters is shown.
+	 * When accepting the suggestion, the full snippet is inserted.
 	*/
-	readonly text: string;
+	readonly insertText: string | { snippet: string };
+
+	/**
+	 * A text that is used to decide if this inline completion should be shown.
+	 * An inline completion is shown if the text to replace is a subword of the filter text.
+	 */
+	readonly filterText?: string;
+
+	/**
+	 * An optional array of additional text edits that are applied when
+	 * selecting this completion. Edits must not overlap with the main edit
+	 * nor with themselves.
+	 */
+	readonly additionalTextEdits?: ISingleEditOperation[];
 
 	/**
 	 * The range to replace.
@@ -797,10 +631,20 @@ export interface InlineCompletion {
 	readonly range?: IRange;
 
 	readonly command?: Command;
+
+	/**
+	 * If set to `true`, unopened closing brackets are removed and unclosed opening brackets are closed.
+	 * Defaults to `false`.
+	*/
+	readonly completeBracketPairs?: boolean;
 }
 
 export interface InlineCompletions<TItem extends InlineCompletion = InlineCompletion> {
 	readonly items: readonly TItem[];
+	/**
+	 * A list of commands associated with the inline completions of this list.
+	 */
+	readonly commands?: Command[];
 }
 
 export interface InlineCompletionsProvider<T extends InlineCompletions = InlineCompletions> {
@@ -827,9 +671,6 @@ export interface CodeAction {
 	disabled?: string;
 }
 
-/**
- * @internal
- */
 export const enum CodeActionTriggerType {
 	Invoke = 1,
 	Auto = 2,
@@ -854,7 +695,7 @@ export interface CodeActionList extends IDisposable {
  */
 export interface CodeActionProvider {
 
-	displayName?: string
+	displayName?: string;
 
 	/**
 	 * Provide commands for the given document and range.
@@ -871,12 +712,32 @@ export interface CodeActionProvider {
 	 */
 	readonly providedCodeActionKinds?: ReadonlyArray<string>;
 
-	readonly documentation?: ReadonlyArray<{ readonly kind: string, readonly command: Command }>;
+	readonly documentation?: ReadonlyArray<{ readonly kind: string; readonly command: Command }>;
 
 	/**
 	 * @internal
 	 */
 	_getAdditionalMenuItems?(context: CodeActionContext, actions: readonly CodeAction[]): Command[];
+}
+
+/**
+ * @internal
+ */
+export interface DocumentPasteEdit {
+	insertText: string | { snippet: string };
+	additionalEdit?: WorkspaceEdit;
+}
+
+/**
+ * @internal
+ */
+export interface DocumentPasteEditProvider {
+
+	readonly pasteMimeTypes: readonly string[];
+
+	prepareDocumentPaste?(model: model.ITextModel, ranges: readonly IRange[], dataTransfer: VSDataTransfer, token: CancellationToken): Promise<undefined | VSDataTransfer>;
+
+	provideDocumentPasteEdits(model: model.ITextModel, ranges: readonly IRange[], dataTransfer: VSDataTransfer, token: CancellationToken): Promise<DocumentPasteEdit | undefined>;
 }
 
 /**
@@ -1270,7 +1131,11 @@ export interface DocumentSymbolProvider {
 	provideDocumentSymbols(model: model.ITextModel, token: CancellationToken): ProviderResult<DocumentSymbol[]>;
 }
 
-export type TextEdit = { range: IRange; text: string; eol?: model.EndOfLineSequence; };
+export interface TextEdit {
+	range: IRange;
+	text: string;
+	eol?: model.EndOfLineSequence;
+}
 
 /**
  * Interface used to format a model
@@ -1474,6 +1339,11 @@ export interface FoldingContext {
 export interface FoldingRangeProvider {
 
 	/**
+	 * @internal
+	 */
+	readonly id?: string;
+
+	/**
 	 * An optional event to signal that the folding ranges from this provider have changed.
 	 */
 	onDidChange?: Event<this>;
@@ -1536,7 +1406,7 @@ export interface WorkspaceEditMetadata {
 	/**
 	 * @internal
 	 */
-	iconPath?: ThemeIcon | URI | { light: URI, dark: URI };
+	iconPath?: ThemeIcon | URI | { light: URI; dark: URI };
 }
 
 export interface WorkspaceFileEditOptions {
@@ -1548,24 +1418,25 @@ export interface WorkspaceFileEditOptions {
 	folder?: boolean;
 	skipTrashBin?: boolean;
 	maxSize?: number;
+	contentsBase64?: string;
 }
 
-export interface WorkspaceFileEdit {
-	oldUri?: URI;
-	newUri?: URI;
+export interface IWorkspaceFileEdit {
+	oldResource?: URI;
+	newResource?: URI;
 	options?: WorkspaceFileEditOptions;
 	metadata?: WorkspaceEditMetadata;
 }
 
-export interface WorkspaceTextEdit {
+export interface IWorkspaceTextEdit {
 	resource: URI;
-	edit: TextEdit;
-	modelVersionId?: number;
+	textEdit: TextEdit & { insertAsSnippet?: boolean };
+	versionId: number | undefined;
 	metadata?: WorkspaceEditMetadata;
 }
 
 export interface WorkspaceEdit {
-	edits: Array<WorkspaceTextEdit | WorkspaceFileEdit>;
+	edits: Array<IWorkspaceTextEdit | IWorkspaceFileEdit>;
 }
 
 export interface Rejection {
@@ -1579,37 +1450,6 @@ export interface RenameLocation {
 export interface RenameProvider {
 	provideRenameEdits(model: model.ITextModel, position: Position, newName: string, token: CancellationToken): ProviderResult<WorkspaceEdit & Rejection>;
 	resolveRenameLocation?(model: model.ITextModel, position: Position, token: CancellationToken): ProviderResult<RenameLocation & Rejection>;
-}
-
-/**
- * @internal
- */
-export interface AuthenticationSession {
-	id: string;
-	accessToken: string;
-	account: {
-		label: string;
-		id: string;
-	}
-	scopes: ReadonlyArray<string>;
-	idToken?: string;
-}
-
-/**
- * @internal
- */
-export interface AuthenticationSessionsChangeEvent {
-	added: ReadonlyArray<AuthenticationSession>;
-	removed: ReadonlyArray<AuthenticationSession>;
-	changed: ReadonlyArray<AuthenticationSession>;
-}
-
-/**
- * @internal
- */
-export interface AuthenticationProviderInformation {
-	id: string;
-	label: string;
 }
 
 export interface Command {
@@ -1670,7 +1510,13 @@ export enum CommentThreadCollapsibleState {
 	Expanded = 1
 }
 
-
+/**
+ * @internal
+ */
+export enum CommentThreadState {
+	Unresolved = 0,
+	Resolved = 1
+}
 
 /**
  * @internal
@@ -1693,26 +1539,32 @@ export interface CommentInput {
 /**
  * @internal
  */
-export interface CommentThread {
+export interface CommentThread<T = IRange> {
+	isDocumentCommentThread(): this is CommentThread<IRange>;
 	commentThreadHandle: number;
 	controllerHandle: number;
 	extensionId?: string;
 	threadId: string;
 	resource: string | null;
-	range: IRange;
+	range: T;
 	label: string | undefined;
 	contextValue: string | undefined;
 	comments: Comment[] | undefined;
-	onDidChangeComments: Event<Comment[] | undefined>;
+	onDidChangeComments: Event<readonly Comment[] | undefined>;
 	collapsibleState?: CommentThreadCollapsibleState;
+	initialCollapsibleState?: CommentThreadCollapsibleState;
+	onDidChangeInitialCollapsibleState: Event<CommentThreadCollapsibleState | undefined>;
+	state?: CommentThreadState;
 	canReply: boolean;
 	input?: CommentInput;
 	onDidChangeInput: Event<CommentInput | undefined>;
-	onDidChangeRange: Event<IRange>;
+	onDidChangeRange: Event<T>;
 	onDidChangeLabel: Event<string | undefined>;
-	onDidChangeCollasibleState: Event<CommentThreadCollapsibleState | undefined>;
+	onDidChangeCollapsibleState: Event<CommentThreadCollapsibleState | undefined>;
+	onDidChangeState: Event<CommentThreadState | undefined>;
 	onDidChangeCanReply: Event<boolean>;
 	isDisposed: boolean;
+	isTemplate: boolean;
 }
 
 /**
@@ -1770,27 +1622,27 @@ export interface Comment {
 	readonly commentReactions?: CommentReaction[];
 	readonly label?: string;
 	readonly mode?: CommentMode;
-	readonly timestamp?: Date;
+	readonly timestamp?: string;
 }
 
 /**
  * @internal
  */
-export interface CommentThreadChangedEvent {
+export interface CommentThreadChangedEvent<T> {
 	/**
 	 * Added comment threads.
 	 */
-	readonly added: CommentThread[];
+	readonly added: CommentThread<T>[];
 
 	/**
 	 * Removed comment threads.
 	 */
-	readonly removed: CommentThread[];
+	readonly removed: CommentThread<T>[];
 
 	/**
 	 * Changed comment threads.
 	 */
-	readonly changed: CommentThread[];
+	readonly changed: CommentThread<T>[];
 }
 
 export interface CodeLens {
@@ -1812,24 +1664,24 @@ export interface CodeLensProvider {
 
 
 export enum InlayHintKind {
-	Other = 0,
 	Type = 1,
 	Parameter = 2,
 }
 
 export interface InlayHintLabelPart {
 	label: string;
-	tooltip?: string | IMarkdownString
+	tooltip?: string | IMarkdownString;
 	// collapsible?: boolean;
-	command?: Command
+	command?: Command;
 	location?: Location;
 }
 
 export interface InlayHint {
 	label: string | InlayHintLabelPart[];
-	tooltip?: string | IMarkdownString
+	tooltip?: string | IMarkdownString;
+	textEdits?: TextEdit[];
 	position: IPosition;
-	kind: InlayHintKind;
+	kind?: InlayHintKind;
 	paddingLeft?: boolean;
 	paddingRight?: boolean;
 }
@@ -1840,6 +1692,7 @@ export interface InlayHintList {
 }
 
 export interface InlayHintsProvider {
+	displayName?: string;
 	onDidChangeInlayHints?: Event<void>;
 	provideInlayHints(model: model.ITextModel, range: Range, token: CancellationToken): ProviderResult<InlayHintList>;
 	resolveInlayHint?(hint: InlayHint, token: CancellationToken): ProviderResult<InlayHint>;
@@ -1877,143 +1730,6 @@ export interface DocumentRangeSemanticTokensProvider {
 	getLegend(): SemanticTokensLegend;
 	provideDocumentRangeSemanticTokens(model: model.ITextModel, range: Range, token: CancellationToken): ProviderResult<SemanticTokens>;
 }
-
-// --- feature registries ------
-
-/**
- * @internal
- */
-export const ReferenceProviderRegistry = new LanguageFeatureRegistry<ReferenceProvider>();
-
-/**
- * @internal
- */
-export const RenameProviderRegistry = new LanguageFeatureRegistry<RenameProvider>();
-
-/**
- * @internal
- */
-export const CompletionProviderRegistry = new LanguageFeatureRegistry<CompletionItemProvider>();
-
-/**
- * @internal
- */
-export const InlineCompletionsProviderRegistry = new LanguageFeatureRegistry<InlineCompletionsProvider>();
-
-/**
- * @internal
- */
-export const SignatureHelpProviderRegistry = new LanguageFeatureRegistry<SignatureHelpProvider>();
-
-/**
- * @internal
- */
-export const HoverProviderRegistry = new LanguageFeatureRegistry<HoverProvider>();
-
-/**
- * @internal
- */
-export const EvaluatableExpressionProviderRegistry = new LanguageFeatureRegistry<EvaluatableExpressionProvider>();
-
-/**
- * @internal
- */
-export const InlineValuesProviderRegistry = new LanguageFeatureRegistry<InlineValuesProvider>();
-
-/**
- * @internal
- */
-export const DocumentSymbolProviderRegistry = new LanguageFeatureRegistry<DocumentSymbolProvider>();
-
-/**
- * @internal
- */
-export const DocumentHighlightProviderRegistry = new LanguageFeatureRegistry<DocumentHighlightProvider>();
-
-/**
- * @internal
- */
-export const LinkedEditingRangeProviderRegistry = new LanguageFeatureRegistry<LinkedEditingRangeProvider>();
-
-/**
- * @internal
- */
-export const DefinitionProviderRegistry = new LanguageFeatureRegistry<DefinitionProvider>();
-
-/**
- * @internal
- */
-export const DeclarationProviderRegistry = new LanguageFeatureRegistry<DeclarationProvider>();
-
-/**
- * @internal
- */
-export const ImplementationProviderRegistry = new LanguageFeatureRegistry<ImplementationProvider>();
-
-/**
- * @internal
- */
-export const TypeDefinitionProviderRegistry = new LanguageFeatureRegistry<TypeDefinitionProvider>();
-
-/**
- * @internal
- */
-export const CodeLensProviderRegistry = new LanguageFeatureRegistry<CodeLensProvider>();
-
-/**
- * @internal
- */
-export const InlayHintsProviderRegistry = new LanguageFeatureRegistry<InlayHintsProvider>();
-
-/**
- * @internal
- */
-export const CodeActionProviderRegistry = new LanguageFeatureRegistry<CodeActionProvider>();
-
-/**
- * @internal
- */
-export const DocumentFormattingEditProviderRegistry = new LanguageFeatureRegistry<DocumentFormattingEditProvider>();
-
-/**
- * @internal
- */
-export const DocumentRangeFormattingEditProviderRegistry = new LanguageFeatureRegistry<DocumentRangeFormattingEditProvider>();
-
-/**
- * @internal
- */
-export const OnTypeFormattingEditProviderRegistry = new LanguageFeatureRegistry<OnTypeFormattingEditProvider>();
-
-/**
- * @internal
- */
-export const LinkProviderRegistry = new LanguageFeatureRegistry<LinkProvider>();
-
-/**
- * @internal
- */
-export const ColorProviderRegistry = new LanguageFeatureRegistry<DocumentColorProvider>();
-
-/**
- * @internal
- */
-export const SelectionRangeRegistry = new LanguageFeatureRegistry<SelectionRangeProvider>();
-
-/**
- * @internal
- */
-export const FoldingRangeProviderRegistry = new LanguageFeatureRegistry<FoldingRangeProvider>();
-
-/**
- * @internal
- */
-export const DocumentSemanticTokensProviderRegistry = new LanguageFeatureRegistry<DocumentSemanticTokensProvider>();
-
-/**
- * @internal
- */
-export const DocumentRangeSemanticTokensProviderRegistry = new LanguageFeatureRegistry<DocumentRangeSemanticTokensProvider>();
 
 /**
  * @internal
@@ -2099,4 +1815,19 @@ export enum ExternalUriOpenerPriority {
 	Option = 1,
 	Default = 2,
 	Preferred = 3,
+}
+
+/**
+ * @internal
+ */
+export interface DocumentOnDropEdit {
+	insertText: string | { snippet: string };
+	additionalEdit?: WorkspaceEdit;
+}
+
+/**
+ * @internal
+ */
+export interface DocumentOnDropEditProvider {
+	provideDocumentOnDropEdits(model: model.ITextModel, position: IPosition, dataTransfer: VSDataTransfer, token: CancellationToken): ProviderResult<DocumentOnDropEdit>;
 }

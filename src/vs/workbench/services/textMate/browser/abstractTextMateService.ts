@@ -12,23 +12,25 @@ import * as resources from 'vs/base/common/resources';
 import * as types from 'vs/base/common/types';
 import { equals as equalArray } from 'vs/base/common/arrays';
 import { URI } from 'vs/base/common/uri';
-import { IState, ITokenizationSupport, LanguageId, TokenMetadata, TokenizationRegistry, StandardTokenType, ITokenizationSupportFactory, TokenizationResult, EncodedTokenizationResult } from 'vs/editor/common/languages';
-import { nullTokenizeEncoded } from 'vs/editor/common/languages/nullMode';
+import { IState, ITokenizationSupport, TokenizationRegistry, ITokenizationSupportFactory, TokenizationResult, EncodedTokenizationResult } from 'vs/editor/common/languages';
+import { LanguageId, StandardTokenType } from 'vs/editor/common/encodedTokenAttributes';
+import { nullTokenizeEncoded } from 'vs/editor/common/languages/nullTokenize';
 import { generateTokensCSSForColorMap } from 'vs/editor/common/languages/supports/tokenization';
-import { ILanguageService } from 'vs/editor/common/services/language';
+import { ILanguageService } from 'vs/editor/common/languages/language';
 import { ILogService } from 'vs/platform/log/common/log';
 import { INotificationService } from 'vs/platform/notification/common/notification';
 import { ExtensionMessageCollector } from 'vs/workbench/services/extensions/common/extensionsRegistry';
 import { ITMSyntaxExtensionPoint, grammarsExtPoint } from 'vs/workbench/services/textMate/common/TMGrammars';
 import { ITextMateService } from 'vs/workbench/services/textMate/browser/textMate';
 import { ITextMateThemingRule, IWorkbenchThemeService, IWorkbenchColorTheme } from 'vs/workbench/services/themes/common/workbenchThemeService';
-import type { IGrammar, StackElement, IOnigLib, IRawTheme } from 'vscode-textmate';
+import type { IGrammar, StateStack, IOnigLib, IRawTheme } from 'vscode-textmate';
 import { Disposable, IDisposable, dispose } from 'vs/base/common/lifecycle';
 import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
 import { IValidGrammarDefinition, IValidEmbeddedLanguagesMap, IValidTokenTypeMap } from 'vs/workbench/services/textMate/common/TMScopeRegistry';
-import { TMGrammarFactory } from 'vs/workbench/services/textMate/common/TMGrammarFactory';
-import { IExtensionResourceLoaderService } from 'vs/workbench/services/extensionResourceLoader/common/extensionResourceLoader';
+import { missingTMGrammarErrorMessage, TMGrammarFactory } from 'vs/workbench/services/textMate/common/TMGrammarFactory';
+import { IExtensionResourceLoaderService } from 'vs/platform/extensionResourceLoader/common/extensionResourceLoader';
 import { IProgressService, ProgressLocation } from 'vs/platform/progress/common/progress';
+import { TMTokenization } from 'vs/workbench/services/textMate/common/TMTokenization';
 
 export abstract class AbstractTextMateService extends Disposable implements ITextMateService {
 	public _serviceBrand: undefined;
@@ -94,10 +96,10 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 
 					const embeddedLanguages: IValidEmbeddedLanguagesMap = Object.create(null);
 					if (grammar.embeddedLanguages) {
-						let scopes = Object.keys(grammar.embeddedLanguages);
+						const scopes = Object.keys(grammar.embeddedLanguages);
 						for (let i = 0, len = scopes.length; i < len; i++) {
-							let scope = scopes[i];
-							let language = grammar.embeddedLanguages[scope];
+							const scope = scopes[i];
+							const language = grammar.embeddedLanguages[scope];
 							if (typeof language !== 'string') {
 								// never hurts to be too careful
 								continue;
@@ -132,6 +134,16 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 						validLanguageId = grammar.language;
 					}
 
+					function asStringArray(array: unknown, defaultValue: string[]): string[] {
+						if (!Array.isArray(array)) {
+							return defaultValue;
+						}
+						if (!array.every(e => typeof e === 'string')) {
+							return defaultValue;
+						}
+						return array;
+					}
+
 					this._grammarDefinitions.push({
 						location: grammarLocation,
 						language: validLanguageId ? validLanguageId : undefined,
@@ -139,6 +151,8 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 						embeddedLanguages: embeddedLanguages,
 						tokenTypes: tokenTypes,
 						injectTo: grammar.injectTo,
+						balancedBracketSelectors: asStringArray(grammar.balancedBracketScopes, ['*']),
+						unbalancedBracketSelectors: asStringArray(grammar.unbalancedBracketScopes, []),
 					});
 
 					if (validLanguageId) {
@@ -152,28 +166,10 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 			}
 		});
 
+		this._updateTheme(this._grammarFactory, this._themeService.getColorTheme(), true);
 		this._register(this._themeService.onDidColorThemeChange(() => {
-			if (this._grammarFactory) {
-				this._updateTheme(this._grammarFactory, this._themeService.getColorTheme(), false);
-			}
+			this._updateTheme(this._grammarFactory, this._themeService.getColorTheme(), false);
 		}));
-
-		// Generate some color map until the grammar registry is loaded
-		let colorTheme = this._themeService.getColorTheme();
-		let defaultForeground: Color = Color.transparent;
-		let defaultBackground: Color = Color.transparent;
-		for (let i = 0, len = colorTheme.tokenColors.length; i < len; i++) {
-			let rule = colorTheme.tokenColors[i];
-			if (!rule.scope && rule.settings) {
-				if (rule.settings.foreground) {
-					defaultForeground = Color.fromHex(rule.settings.foreground);
-				}
-				if (rule.settings.background) {
-					defaultBackground = Color.fromHex(rule.settings.background);
-				}
-			}
-		}
-		TokenizationRegistry.setColorMap([null!, defaultForeground, defaultBackground]);
 
 		this._languageService.onDidEncounterLanguage((languageId) => {
 			this._createdModes.push(languageId);
@@ -281,8 +277,12 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 							this._onDidEncounterLanguage.fire(languageId);
 						}
 					});
-					return new TMTokenizationSupport(languageId, encodedLanguageId, tokenization, this._configurationService);
+					return new TMTokenizationSupportWithLineLimit(languageId, encodedLanguageId, tokenization, this._configurationService);
 				} catch (err) {
+					if (err.message && err.message === missingTMGrammarErrorMessage) {
+						// Don't log this error message
+						return null;
+					}
 					onUnexpectedError(err);
 					return null;
 				}
@@ -291,14 +291,14 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 	}
 
 	private static _toColorMap(colorMap: string[]): Color[] {
-		let result: Color[] = [null!];
+		const result: Color[] = [null!];
 		for (let i = 1, len = colorMap.length; i < len; i++) {
 			result[i] = Color.fromHex(colorMap[i]);
 		}
 		return result;
 	}
 
-	private _updateTheme(grammarFactory: TMGrammarFactory, colorTheme: IWorkbenchColorTheme, forceUpdate: boolean): void {
+	private _updateTheme(grammarFactory: TMGrammarFactory | null, colorTheme: IWorkbenchColorTheme, forceUpdate: boolean): void {
 		if (!forceUpdate && this._currentTheme && this._currentTokenColorMap && AbstractTextMateService.equalsTokenRules(this._currentTheme.settings, colorTheme.tokenColors) && equalArray(this._currentTokenColorMap, colorTheme.tokenColorMap)) {
 			return;
 		}
@@ -307,10 +307,10 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 		this._doUpdateTheme(grammarFactory, this._currentTheme, this._currentTokenColorMap);
 	}
 
-	protected _doUpdateTheme(grammarFactory: TMGrammarFactory, theme: IRawTheme, tokenColorMap: string[]): void {
-		grammarFactory.setTheme(theme, tokenColorMap);
-		let colorMap = AbstractTextMateService._toColorMap(tokenColorMap);
-		let cssRules = generateTokensCSSForColorMap(colorMap);
+	protected _doUpdateTheme(grammarFactory: TMGrammarFactory | null, theme: IRawTheme, tokenColorMap: string[]): void {
+		grammarFactory?.setTheme(theme, tokenColorMap);
+		const colorMap = AbstractTextMateService._toColorMap(tokenColorMap);
+		const cssRules = generateTokensCSSForColorMap(colorMap);
 		this._styleElement.textContent = cssRules;
 		TokenizationRegistry.setColorMap(colorMap);
 	}
@@ -320,13 +320,13 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 			return false;
 		}
 		for (let i = b.length - 1; i >= 0; i--) {
-			let r1 = b[i];
-			let r2 = a[i];
+			const r1 = b[i];
+			const r2 = a[i];
 			if (r1.scope !== r2.scope) {
 				return false;
 			}
-			let s1 = r1.settings;
-			let s2 = r2.settings;
+			const s1 = r1.settings;
+			const s2 = r2.settings;
 			if (s1 && s2) {
 				if (s1.fontStyle !== s2.fontStyle || s1.foreground !== s2.foreground || s1.background !== s2.background) {
 					return false;
@@ -414,7 +414,7 @@ export abstract class AbstractTextMateService extends Disposable implements ITex
 	protected abstract _loadVSCodeOnigurumWASM(): Promise<Response | ArrayBuffer>;
 }
 
-class TMTokenizationSupport implements ITokenizationSupport {
+class TMTokenizationSupportWithLineLimit implements ITokenizationSupport {
 	private readonly _languageId: string;
 	private readonly _encodedLanguageId: LanguageId;
 	private readonly _actual: TMTokenization;
@@ -449,72 +449,12 @@ class TMTokenizationSupport implements ITokenizationSupport {
 		throw new Error('Not supported!');
 	}
 
-	tokenizeEncoded(line: string, hasEOL: boolean, state: StackElement): EncodedTokenizationResult {
+	tokenizeEncoded(line: string, hasEOL: boolean, state: StateStack): EncodedTokenizationResult {
 		// Do not attempt to tokenize if a line is too long
 		if (line.length >= this._maxTokenizationLineLength) {
 			return nullTokenizeEncoded(this._encodedLanguageId, state);
 		}
 
-		return this._actual.tokenizeEncoded(line, state);
-	}
-}
-
-class TMTokenization extends Disposable {
-
-	private readonly _grammar: IGrammar;
-	private readonly _containsEmbeddedLanguages: boolean;
-	private readonly _seenLanguages: boolean[];
-	private readonly _initialState: StackElement;
-
-	private readonly _onDidEncounterLanguage: Emitter<LanguageId> = this._register(new Emitter<LanguageId>());
-	public readonly onDidEncounterLanguage: Event<LanguageId> = this._onDidEncounterLanguage.event;
-
-	constructor(grammar: IGrammar, initialState: StackElement, containsEmbeddedLanguages: boolean) {
-		super();
-		this._grammar = grammar;
-		this._initialState = initialState;
-		this._containsEmbeddedLanguages = containsEmbeddedLanguages;
-		this._seenLanguages = [];
-	}
-
-	public getInitialState(): IState {
-		return this._initialState;
-	}
-
-	public tokenizeEncoded(line: string, state: StackElement): EncodedTokenizationResult {
-		const textMateResult = this._grammar.tokenizeLine2(line, state, 500);
-
-		if (textMateResult.stoppedEarly) {
-			console.warn(`Time limit reached when tokenizing line: ${line.substring(0, 100)}`);
-			// return the state at the beginning of the line
-			return new EncodedTokenizationResult(textMateResult.tokens, state);
-		}
-
-		if (this._containsEmbeddedLanguages) {
-			let seenLanguages = this._seenLanguages;
-			let tokens = textMateResult.tokens;
-
-			// Must check if any of the embedded languages was hit
-			for (let i = 0, len = (tokens.length >>> 1); i < len; i++) {
-				let metadata = tokens[(i << 1) + 1];
-				let languageId = TokenMetadata.getLanguageId(metadata);
-
-				if (!seenLanguages[languageId]) {
-					seenLanguages[languageId] = true;
-					this._onDidEncounterLanguage.fire(languageId);
-				}
-			}
-		}
-
-		let endState: StackElement;
-		// try to save an object if possible
-		if (state.equals(textMateResult.ruleStack)) {
-			endState = state;
-		} else {
-			endState = textMateResult.ruleStack;
-
-		}
-
-		return new EncodedTokenizationResult(textMateResult.tokens, endState);
+		return this._actual.tokenizeEncoded(line, hasEOL, state);
 	}
 }

@@ -16,6 +16,8 @@ export const enum TestingConfigKeys {
 	FollowRunningTest = 'testing.followRunningTest',
 	DefaultGutterClickAction = 'testing.defaultGutterClickAction',
 	GutterEnabled = 'testing.gutterEnabled',
+	SaveBeforeTest = 'testing.saveBeforeTest',
+	AlwaysRevealTestOnStateChange = 'testing.alwaysRevealTestOnStateChange'
 }
 
 export const enum AutoOpenTesting {
@@ -66,7 +68,7 @@ export const testingConfiguation: IConfigurationNode = {
 			default: 1000,
 		},
 		[TestingConfigKeys.AutoOpenPeekView]: {
-			description: localize('testing.automaticallyOpenPeekView', "Configures when the error peek view is automatically opened."),
+			description: localize('testing.automaticallyOpenPeekView', "Configures when the error Peek view is automatically opened."),
 			enum: [
 				AutoOpenPeekViewWhen.FailureAnywhere,
 				AutoOpenPeekViewWhen.FailureVisible,
@@ -80,12 +82,12 @@ export const testingConfiguation: IConfigurationNode = {
 			],
 		},
 		[TestingConfigKeys.AutoOpenPeekViewDuringAutoRun]: {
-			description: localize('testing.automaticallyOpenPeekViewDuringAutoRun', "Controls whether to automatically open the peek view during auto-run mode."),
+			description: localize('testing.automaticallyOpenPeekViewDuringAutoRun', "Controls whether to automatically open the Peek view during auto-run mode."),
 			type: 'boolean',
 			default: false,
 		},
 		[TestingConfigKeys.FollowRunningTest]: {
-			description: localize('testing.followRunningTest', 'Controls whether the running test should be followed in the test explorer view'),
+			description: localize('testing.followRunningTest', 'Controls whether the running test should be followed in the Test Explorer view.'),
 			type: 'boolean',
 			default: true,
 		},
@@ -108,6 +110,11 @@ export const testingConfiguation: IConfigurationNode = {
 			type: 'boolean',
 			default: true,
 		},
+		[TestingConfigKeys.SaveBeforeTest]: {
+			description: localize('testing.saveBeforeTest', 'Control whether save all dirty editors before running a test.'),
+			type: 'boolean',
+			default: true,
+		},
 		[TestingConfigKeys.OpenTesting]: {
 			enum: [
 				AutoOpenTesting.NeverOpen,
@@ -120,7 +127,12 @@ export const testingConfiguation: IConfigurationNode = {
 				localize('testing.openTesting.openOnTestFailure', 'Open the testing view on any test failure'),
 			],
 			default: 'openOnTestStart',
-			description: localize('testing.openTesting', "Controls when the debug view should open.")
+			description: localize('testing.openTesting', "Controls when the testing view should open.")
+		},
+		[TestingConfigKeys.AlwaysRevealTestOnStateChange]: {
+			markdownDescription: localize('testing.alwaysRevealTestOnStateChange', "Always reveal the executed test when `#testing.followRunningTest#` is on. If this setting is turned off, only failed tests will be revealed."),
+			type: 'boolean',
+			default: false,
 		},
 	}
 };
@@ -133,7 +145,9 @@ export interface ITestingConfiguration {
 	[TestingConfigKeys.FollowRunningTest]: boolean;
 	[TestingConfigKeys.DefaultGutterClickAction]: DefaultGutterClickAction;
 	[TestingConfigKeys.GutterEnabled]: boolean;
+	[TestingConfigKeys.SaveBeforeTest]: boolean;
 	[TestingConfigKeys.OpenTesting]: AutoOpenTesting;
+	[TestingConfigKeys.AlwaysRevealTestOnStateChange]: boolean;
 }
 
 export const getTestingConfiguration = <K extends TestingConfigKeys>(config: IConfigurationService, key: K) => config.getValue<ITestingConfiguration[K]>(key);

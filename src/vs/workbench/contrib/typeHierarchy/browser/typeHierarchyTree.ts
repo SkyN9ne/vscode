@@ -82,7 +82,7 @@ export class IdentityProvider implements IIdentityProvider<Type> {
 		public getDirection: () => TypeHierarchyDirection
 	) { }
 
-	getId(element: Type): { toString(): string; } {
+	getId(element: Type): { toString(): string } {
 		let res = this.getDirection() + JSON.stringify(element.item.uri) + JSON.stringify(element.item.range);
 		if (element.parent) {
 			res += this.getId(element.parent);
@@ -106,7 +106,7 @@ export class TypeRenderer implements ITreeRenderer<Type, FuzzyScore, TypeRenderi
 
 	renderTemplate(container: HTMLElement): TypeRenderingTemplate {
 		container.classList.add('typehierarchy-element');
-		let icon = document.createElement('div');
+		const icon = document.createElement('div');
 		container.appendChild(icon);
 		const label = new IconLabel(container, { supportHighlights: true });
 		return new TypeRenderingTemplate(icon, label);

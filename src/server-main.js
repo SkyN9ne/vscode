@@ -21,7 +21,16 @@ async function start() {
 	// Do a quick parse to determine if a server or the cli needs to be started
 	const parsedArgs = minimist(process.argv.slice(2), {
 		boolean: ['start-server', 'list-extensions', 'print-ip-address', 'help', 'version', 'accept-server-license-terms'],
-		string: ['install-extension', 'install-builtin-extension', 'uninstall-extension', 'locate-extension', 'socket-path', 'host', 'port', 'pick-port', 'compatibility']
+		string: ['install-extension', 'install-builtin-extension', 'uninstall-extension', 'locate-extension', 'socket-path', 'host', 'port', 'compatibility'],
+		alias: { help: 'h', version: 'v' }
+	});
+	['host', 'port', 'accept-server-license-terms'].forEach(e => {
+		if (!parsedArgs[e]) {
+			const envValue = process.env[`VSCODE_SERVER_${e.toUpperCase().replace('-', '_')}`];
+			if (envValue) {
+				parsedArgs[e] = envValue;
+			}
+		}
 	});
 
 	const extensionLookupArgs = ['list-extensions', 'locate-extension'];
@@ -52,7 +61,11 @@ async function start() {
 	/** @returns {Promise<IServerAPI>} */
 	const getRemoteExtensionHostAgentServer = () => {
 		if (!_remoteExtensionHostAgentServerPromise) {
-			_remoteExtensionHostAgentServerPromise = loadCode().then((mod) => mod.createServer(address));
+			_remoteExtensionHostAgentServerPromise = loadCode().then(async (mod) => {
+				const server = await mod.createServer(address);
+				_remoteExtensionHostAgentServer = server;
+				return server;
+			});
 		}
 		return _remoteExtensionHostAgentServerPromise;
 	};
@@ -63,14 +76,18 @@ async function start() {
 	if (Array.isArray(product.serverLicense) && product.serverLicense.length) {
 		console.log(product.serverLicense.join('\n'));
 		if (product.serverLicensePrompt && parsedArgs['accept-server-license-terms'] !== true) {
+			if (hasStdinWithoutTty()) {
+				console.log('To accept the license terms, start the server with --accept-server-license-terms');
+				process.exit(1);
+			}
 			try {
 				const accept = await prompt(product.serverLicensePrompt);
 				if (!accept) {
-					process.exit();
+					process.exit(1);
 				}
 			} catch (e) {
 				console.log(e);
-				process.exit();
+				process.exit(1);
 			}
 		}
 	}
@@ -101,20 +118,20 @@ async function start() {
 		const remoteExtensionHostAgentServer = await getRemoteExtensionHostAgentServer();
 		return remoteExtensionHostAgentServer.handleServerError(err);
 	});
-	const host = parsedArgs['host'] || (parsedArgs['compatibility'] !== '1.63' ? 'localhost' : undefined);
+
+	const host = sanitizeStringArg(parsedArgs['host']) || (parsedArgs['compatibility'] !== '1.63' ? 'localhost' : undefined);
 	const nodeListenOptions = (
 		parsedArgs['socket-path']
-			? { path: parsedArgs['socket-path'] }
-			: { host, port: await parsePort(host, parsedArgs['port'], parsedArgs['pick-port']) }
+			? { path: sanitizeStringArg(parsedArgs['socket-path']) }
+			: { host, port: await parsePort(host, sanitizeStringArg(parsedArgs['port'])) }
 	);
 	server.listen(nodeListenOptions, async () => {
-		const serverGreeting = product.serverGreeting.join('\n');
-		let output = serverGreeting ? `\n\n${serverGreeting}\n\n` : ``;
+		let output = Array.isArray(product.serverGreeting) && product.serverGreeting.length ? `\n\n${product.serverGreeting.join('\n')}\n\n` : ``;
 
 		if (typeof nodeListenOptions.port === 'number' && parsedArgs['print-ip-address']) {
 			const ifaces = os.networkInterfaces();
 			Object.keys(ifaces).forEach(function (ifname) {
-				ifaces[ifname].forEach(function (iface) {
+				ifaces[ifname]?.forEach(function (iface) {
 					if (!iface.internal && iface.family === 'IPv4') {
 						output += `IP Address: ${iface.address}\n`;
 					}
@@ -127,6 +144,7 @@ async function start() {
 			throw new Error('Unexpected server address');
 		}
 
+		output += `Server bound to ${typeof address === 'string' ? address : `${address.address}:${address.port} (${address.family})`}\n`;
 		// Do not change this line. VS Code looks for this in the output.
 		output += `Extension host agent listening on ${typeof address === 'string' ? address : address.port}\n`;
 		console.log(output);
@@ -145,60 +163,46 @@ async function start() {
 		}
 	});
 }
+/**
+ * @param {any} val
+ * @returns {string | undefined}
+ */
+function sanitizeStringArg(val) {
+	if (Array.isArray(val)) { // if an argument is passed multiple times, minimist creates an array
+		val = val.pop(); // take the last item
+	}
+	return typeof val === 'string' ? val : undefined;
+}
 
 /**
- * If `--pick - port` and `--port` is specified, connect to that port.
+ * If `--port` is specified and describes a single port, connect to that port.
  *
- * If not and a port range is specified through `--pick - port`
+ * If `--port`describes a port range
  * then find a free port in that range. Throw error if no
  * free port available in range.
- *
- * If only `--port` is provided then connect to that port.
  *
  * In absence of specified ports, connect to port 8000.
  * @param {string | undefined} host
  * @param {string | undefined} strPort
- * @param {string | undefined} strPickPort
  * @returns {Promise<number>}
  * @throws
  */
-async function parsePort(host, strPort, strPickPort) {
-	let specificPort;
+async function parsePort(host, strPort) {
 	if (strPort) {
 		let range;
 		if (strPort.match(/^\d+$/)) {
-			specificPort = parseInt(strPort, 10);
-			if (specificPort === 0 || !strPickPort) {
-				return specificPort;
-			}
+			return parseInt(strPort, 10);
 		} else if (range = parseRange(strPort)) {
 			const port = await findFreePort(host, range.start, range.end);
 			if (port !== undefined) {
 				return port;
 			}
-			console.warn(`--port: Could not find free port in range: ${range.start} - ${range.end}.`);
+			// Remote-SSH extension relies on this exact port error message, treat as an API
+			console.warn(`--port: Could not find free port in range: ${range.start} - ${range.end} (inclusive).`);
 			process.exit(1);
 
 		} else {
-			console.warn(`--port "${strPort}" is not a valid number or range.`);
-			process.exit(1);
-		}
-	}
-	if (strPickPort) {
-		const range = parseRange(strPickPort);
-		if (range) {
-			if (range.start <= specificPort && specificPort <= range.end) {
-				return specificPort;
-			} else {
-				const port = await findFreePort(host, range.start, range.end);
-				if (port !== undefined) {
-					return port;
-				}
-				console.log(`--pick - port: Could not find free port in range: ${range.start} - ${range.end}.`);
-				process.exit(1);
-			}
-		} else {
-			console.log(`--pick - port "${strPickPort}" is not properly formatted.`);
+			console.warn(`--port "${strPort}" is not a valid number or range. Ranges must be in the form 'from-to' with 'from' an integer larger than 0 and not larger than 'end'.`);
 			process.exit(1);
 		}
 	}
@@ -212,7 +216,10 @@ async function parsePort(host, strPort, strPickPort) {
 function parseRange(strRange) {
 	const match = strRange.match(/^(\d+)-(\d+)$/);
 	if (match) {
-		return { start: parseInt(match[1], 10), end: parseInt(match[2], 10) };
+		const start = parseInt(match[1], 10), end = parseInt(match[2], 10);
+		if (start > 0 && start <= end && end <= 65535) {
+			return { start, end };
+		}
 	}
 	return undefined;
 }
@@ -239,7 +246,7 @@ async function findFreePort(host, start, end) {
 			});
 		});
 	};
-	for (let port = start; port < end; port++) {
+	for (let port = start; port <= end; port++) {
 		if (await testPort(port)) {
 			return port;
 		}
@@ -247,10 +254,18 @@ async function findFreePort(host, start, end) {
 	return undefined;
 }
 
-/** @returns { Promise<typeof import('./vs/server/node/remoteExtensionHostAgent')> } */
+/** @returns { Promise<typeof import('./vs/server/node/server.main')> } */
 function loadCode() {
 	return new Promise((resolve, reject) => {
 		const path = require('path');
+
+		delete process.env['ELECTRON_RUN_AS_NODE']; // Keep bootstrap-amd.js from redefining 'fs'.
+
+		// See https://github.com/microsoft/vscode-remote-release/issues/6543
+		// We would normally install a SIGPIPE listener in bootstrap.js
+		// But in certain situations, the console itself can be in a broken pipe state
+		// so logging SIGPIPE to the console will cause an infinite async loop
+		process.env['VSCODE_HANDLES_SIGPIPE'] = 'true';
 
 		if (process.env['VSCODE_DEV']) {
 			// When running out of sources, we need to load node modules from remote/node_modules,
@@ -260,8 +275,17 @@ function loadCode() {
 		} else {
 			delete process.env['VSCODE_INJECT_NODE_MODULE_LOOKUP_PATH'];
 		}
-		require('./bootstrap-amd').load('vs/server/node/remoteExtensionHostAgent', resolve, reject);
+		require('./bootstrap-amd').load('vs/server/node/server.main', resolve, reject);
 	});
+}
+
+function hasStdinWithoutTty() {
+	try {
+		return !process.stdin.isTTY; // Via https://twitter.com/MylesBorins/status/782009479382626304
+	} catch (error) {
+		// Windows workaround for https://github.com/nodejs/node/issues/11656
+	}
+	return false;
 }
 
 /**

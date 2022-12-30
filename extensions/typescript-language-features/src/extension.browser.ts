@@ -4,10 +4,10 @@
  *--------------------------------------------------------------------------------------------*/
 
 import * as vscode from 'vscode';
+import VsCodeTelemetryReporter from '@vscode/extension-telemetry';
 import { Api, getExtensionApi } from './api';
 import { CommandManager } from './commands/commandManager';
 import { registerBaseCommands } from './commands/index';
-import { LanguageConfigurationManager } from './languageFeatures/languageConfiguration';
 import { createLazyClientHost, lazilyActivateClient } from './lazyClientHost';
 import { noopRequestCancellerFactory } from './tsServer/cancellation';
 import { noopLogDirectoryProvider } from './tsServer/logDirectoryProvider';
@@ -18,6 +18,8 @@ import API from './utils/api';
 import { TypeScriptServiceConfiguration } from './utils/configuration';
 import { BrowserServiceConfigurationProvider } from './utils/configuration.browser';
 import { PluginManager } from './utils/plugins';
+import { ExperimentationTelemetryReporter, IExperimentationTelemetryReporter } from './experimentTelemetryReporter';
+import { getPackageInfo } from './utils/packageInfo';
 
 class StaticVersionProvider implements ITypeScriptVersionProvider {
 
@@ -46,8 +48,6 @@ export function activate(
 	const commandManager = new CommandManager();
 	context.subscriptions.push(commandManager);
 
-	context.subscriptions.push(new LanguageConfigurationManager());
-
 	const onCompletionAccepted = new vscode.EventEmitter<vscode.CompletionItem>();
 	context.subscriptions.push(onCompletionAccepted);
 
@@ -58,7 +58,16 @@ export function activate(
 		new TypeScriptVersion(
 			TypeScriptVersionSource.Bundled,
 			vscode.Uri.joinPath(context.extensionUri, 'dist/browser/typescript/tsserver.web.js').toString(),
-			API.fromSimpleString('4.5.4')));
+			API.fromSimpleString('4.9.3')));
+
+	let experimentTelemetryReporter: IExperimentationTelemetryReporter | undefined;
+	const packageInfo = getPackageInfo(context);
+	if (packageInfo) {
+		const { aiKey } = packageInfo;
+		const vscTelemetryReporter = new VsCodeTelemetryReporter(aiKey);
+		experimentTelemetryReporter = new ExperimentationTelemetryReporter(vscTelemetryReporter);
+		context.subscriptions.push(experimentTelemetryReporter);
+	}
 
 	const lazyClientHost = createLazyClientHost(context, false, {
 		pluginManager,
@@ -69,6 +78,7 @@ export function activate(
 		processFactory: WorkerServerProcess,
 		activeJsTsEditorTracker,
 		serviceConfigurationProvider: new BrowserServiceConfigurationProvider(),
+		experimentTelemetryReporter,
 	}, item => {
 		onCompletionAccepted.fire(item);
 	});

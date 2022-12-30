@@ -16,7 +16,7 @@ import { ContextKeyExpr, IContextKeyService, RawContextKey } from 'vs/platform/c
 import { ICommandService } from 'vs/platform/commands/common/commands';
 import { Schemas } from 'vs/base/common/network';
 import { IExtensionService } from 'vs/workbench/services/extensions/common/extensions';
-import { IQuickInputService, IQuickPickItem, IQuickPickSeparator } from 'vs/platform/quickinput/common/quickInput';
+import { QuickPickItem, IQuickInputService } from 'vs/platform/quickinput/common/quickInput';
 import { IBrowserWorkbenchEnvironmentService } from 'vs/workbench/services/environment/browser/environmentService';
 import { PersistentConnectionEventType } from 'vs/platform/remote/common/remoteAgentConnection';
 import { IRemoteAuthorityResolverService } from 'vs/platform/remote/common/remoteAuthorityResolver';
@@ -34,7 +34,7 @@ import { IExtensionGalleryService } from 'vs/platform/extensionManagement/common
 import { IExtensionsViewPaneContainer, LIST_WORKSPACE_UNSUPPORTED_EXTENSIONS_COMMAND_ID, VIEWLET_ID } from 'vs/workbench/contrib/extensions/common/extensions';
 import { ServicesAccessor } from 'vs/platform/instantiation/common/instantiation';
 import { IMarkdownString, MarkdownString } from 'vs/base/common/htmlContent';
-import { RemoteNameContext, VirtualWorkspaceContext } from 'vs/workbench/browser/contextkeys';
+import { RemoteNameContext, VirtualWorkspaceContext } from 'vs/workbench/common/contextkeys';
 import { IPaneCompositePartService } from 'vs/workbench/services/panecomposite/browser/panecomposite';
 import { ViewContainerLocation } from 'vs/workbench/common/views';
 
@@ -281,7 +281,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 		}
 
 		// Show for remote windows on the desktop, but not when in code server web
-		if (this.remoteAuthority && !isWeb) {
+		if (this.remoteAuthority && (!isWeb || this.environmentService.options?.webSocketFactory)) {
 			const hostLabel = this.labelService.getHostLabel(Schemas.vscodeRemote, this.remoteAuthority) || this.remoteAuthority;
 			switch (this.connectionState) {
 				case 'initializing':
@@ -306,7 +306,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 			}
 			return;
 		}
-		// show when in a virtual workspace
+		// Show when in a virtual workspace
 		if (this.virtualWorkspaceLocation) {
 			// Workspace with label: indicate editing source
 			const workspaceLabel = this.labelService.getHostLabel(this.virtualWorkspaceLocation.scheme, this.virtualWorkspaceLocation.authority);
@@ -330,8 +330,8 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 				return;
 			}
 		}
-		// Remote actions: offer menu
-		if (this.getRemoteMenuActions().length > 0) {
+		// Show when there are commands other than the 'install additional remote extensions' command.
+		if (this.hasRemoteMenuCommands(true)) {
 			this.renderRemoteStatusIndicator(`$(remote)`, nls.localize('noHost.tooltip', "Open a Remote Window"));
 			return;
 		}
@@ -343,7 +343,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 
 	private renderRemoteStatusIndicator(text: string, tooltip?: string | IMarkdownString, command?: string, showProgress?: boolean): void {
 		const name = nls.localize('remoteHost', "Remote Host");
-		if (typeof command !== 'string' && this.getRemoteMenuActions().length > 0) {
+		if (typeof command !== 'string' && (this.hasRemoteMenuCommands(false))) {
 			command = RemoteStatusIndicator.REMOTE_ACTIONS_COMMAND_ID;
 		}
 
@@ -386,7 +386,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 		const computeItems = () => {
 			let actionGroups = this.getRemoteMenuActions(true);
 
-			const items: (IQuickPickItem | IQuickPickSeparator)[] = [];
+			const items: QuickPickItem[] = [];
 
 			const currentRemoteMatcher = matchCurrentRemote();
 			if (currentRemoteMatcher) {
@@ -403,9 +403,9 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 
 			let lastCategoryName: string | undefined = undefined;
 
-			for (let actionGroup of actionGroups) {
+			for (const actionGroup of actionGroups) {
 				let hasGroupCategory = false;
-				for (let action of actionGroup[1]) {
+				for (const action of actionGroup[1]) {
 					if (action instanceof MenuItemAction) {
 						if (!hasGroupCategory) {
 							const category = getCategoryLabel(action);
@@ -415,7 +415,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 							}
 							hasGroupCategory = true;
 						}
-						let label = typeof action.item.title === 'string' ? action.item.title : action.item.title.value;
+						const label = typeof action.item.title === 'string' ? action.item.title : action.item.title.value;
 						items.push({
 							type: 'item',
 							id: action.item.id,
@@ -429,7 +429,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 				type: 'separator'
 			});
 
-			let entriesBeforeConfig = items.length;
+			const entriesBeforeConfig = items.length;
 
 			if (RemoteStatusIndicator.SHOW_CLOSE_REMOTE_COMMAND_ID) {
 				if (this.remoteAuthority) {
@@ -472,6 +472,7 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 		};
 
 		const quickPick = this.quickInputService.createQuickPick();
+		quickPick.placeholder = nls.localize('remoteActions', "Select an option to open a Remote Window");
 		quickPick.items = computeItems();
 		quickPick.sortByLabel = false;
 		quickPick.canSelectMany = false;
@@ -492,5 +493,16 @@ export class RemoteStatusIndicator extends Disposable implements IWorkbenchContr
 		quickPick.onDidHide(itemUpdater.dispose);
 
 		quickPick.show();
+	}
+
+	private hasRemoteMenuCommands(ignoreInstallAdditional: boolean): boolean {
+		if (this.remoteAuthority !== undefined || this.virtualWorkspaceLocation !== undefined) {
+			if (RemoteStatusIndicator.SHOW_CLOSE_REMOTE_COMMAND_ID) {
+				return true;
+			}
+		} else if (!ignoreInstallAdditional && this.extensionGalleryService.isEnabled()) {
+			return true;
+		}
+		return this.getRemoteMenuActions().length > 0;
 	}
 }

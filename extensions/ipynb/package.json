@@ -9,11 +9,12 @@
 		"vscode": "^1.57.0"
 	},
 	"enabledApiProposals": [
-		"notebookEditor",
-		"notebookEditorEdit"
+		"documentPaste",
+		"diffContentOptions"
 	],
 	"activationEvents": [
-		"onNotebook:jupyter-notebook"
+		"onNotebook:jupyter-notebook",
+		"onCommand:ipynb.newUntitledIpynb"
 	],
 	"extensionKind": [
 		"workspace",
@@ -28,25 +29,32 @@
 		}
 	},
 	"contributes": {
-		"languages": [
+		"configuration": [
 			{
-				"id": "jupyter",
-				"aliases": [
-					"Jupyter (JSON)"
-				],
-				"extensions": [
-					".ipynb"
-				]
+				"properties": {
+					"ipynb.pasteImagesAsAttachments.enabled": {
+						"type": "boolean",
+						"scope": "resource",
+						"markdownDescription": "%ipynb.pasteImagesAsAttachments.enabled%",
+						"default": true
+					}
+				}
 			}
 		],
-		"grammars": [
+		"commands": [
 			{
-				"language": "jupyter",
-				"scopeName": "source.jupyter",
-				"path": "./syntaxes/jupyter.tmLanguage.json",
-				"embeddedLanguages": {
-					"source.json": "json"
-				}
+				"command": "ipynb.newUntitledIpynb",
+				"title": "New Jupyter Notebook",
+				"shortTitle": "Jupyter Notebook",
+				"category": "Create"
+			},
+			{
+				"command": "ipynb.openIpynbInNotebookEditor",
+				"title": "Open ipynb file in notebook editor"
+			},
+			{
+				"command": "ipynb.cleanInvalidImageAttachment",
+				"title": "Clean invalid image attachment reference"
 			}
 		],
 		"notebooks": [
@@ -60,11 +68,43 @@
 				],
 				"priority": "default"
 			}
-		]
+		],
+		"notebookRenderer": [
+			{
+				"id": "vscode.markdown-it-cell-attachment-renderer",
+				"displayName": "Markdown it ipynb Cell Attachment renderer",
+				"entrypoint": {
+					"extends": "vscode.markdown-it-renderer",
+					"path": "./notebook-out/cellAttachmentRenderer.js"
+				}
+			}
+		],
+		"menus": {
+			"file/newFile": [
+				{
+					"command": "ipynb.newUntitledIpynb",
+					"group": "notebook"
+				}
+			],
+			"commandPalette": [
+				{
+					"command": "ipynb.newUntitledIpynb"
+				},
+				{
+					"command": "ipynb.openIpynbInNotebookEditor",
+					"when": "false"
+				},
+				{
+					"command": "ipynb.cleanInvalidImageAttachment",
+					"when": "false"
+				}
+			]
+		}
 	},
 	"scripts": {
-		"compile": "npx gulp compile-extension:ipynb",
-		"watch": "npx gulp watch-extension:ipynb"
+		"compile": "npx gulp compile-extension:ipynb && npm run build-notebook",
+		"watch": "npx gulp watch-extension:ipynb",
+		"build-notebook": "node ./esbuild"
 	},
 	"dependencies": {
 		"@enonic/fnv-plus": "^1.3.0",
@@ -72,7 +112,8 @@
 		"uuid": "^8.3.2"
 	},
 	"devDependencies": {
-		"@jupyterlab/coreutils": "^3.1.0",
+		"@jupyterlab/nbformat": "^3.2.9",
+		"@types/markdown-it": "12.2.3",
 		"@types/uuid": "^8.3.1"
 	},
 	"repository": {

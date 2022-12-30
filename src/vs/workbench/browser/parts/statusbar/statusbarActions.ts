@@ -11,12 +11,10 @@ import { KeyCode } from 'vs/base/common/keyCodes';
 import { KeybindingsRegistry, KeybindingWeight } from 'vs/platform/keybinding/common/keybindingsRegistry';
 import { ServicesAccessor } from 'vs/editor/browser/editorExtensions';
 import { Action2, registerAction2 } from 'vs/platform/actions/common/actions';
-import { CATEGORIES } from 'vs/workbench/common/actions';
+import { Categories } from 'vs/platform/action/common/actionCommonCategories';
 import { IEditorService } from 'vs/workbench/services/editor/common/editorService';
 import { StatusbarViewModel } from 'vs/workbench/browser/parts/statusbar/statusbarModel';
-import { RawContextKey } from 'vs/platform/contextkey/common/contextkey';
-
-export const CONTEXT_STATUS_BAR_FOCUSED = new RawContextKey<boolean>('statusBarFocused', false, localize('statusBarFocused', "Whether the status bar has keyboard focus"));
+import { StatusBarFocused } from 'vs/workbench/common/contextkeys';
 
 export class ToggleStatusbarEntryVisibilityAction extends Action {
 
@@ -51,7 +49,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyCode.LeftArrow,
 	secondary: [KeyCode.UpArrow],
-	when: CONTEXT_STATUS_BAR_FOCUSED,
+	when: StatusBarFocused,
 	handler: (accessor: ServicesAccessor) => {
 		const statusBarService = accessor.get(IStatusbarService);
 		statusBarService.focusPreviousEntry();
@@ -63,7 +61,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyCode.RightArrow,
 	secondary: [KeyCode.DownArrow],
-	when: CONTEXT_STATUS_BAR_FOCUSED,
+	when: StatusBarFocused,
 	handler: (accessor: ServicesAccessor) => {
 		const statusBarService = accessor.get(IStatusbarService);
 		statusBarService.focusNextEntry();
@@ -74,7 +72,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	id: 'workbench.statusBar.focusFirst',
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyCode.Home,
-	when: CONTEXT_STATUS_BAR_FOCUSED,
+	when: StatusBarFocused,
 	handler: (accessor: ServicesAccessor) => {
 		const statusBarService = accessor.get(IStatusbarService);
 		statusBarService.focus(false);
@@ -86,7 +84,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	id: 'workbench.statusBar.focusLast',
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyCode.End,
-	when: CONTEXT_STATUS_BAR_FOCUSED,
+	when: StatusBarFocused,
 	handler: (accessor: ServicesAccessor) => {
 		const statusBarService = accessor.get(IStatusbarService);
 		statusBarService.focus(false);
@@ -98,7 +96,7 @@ KeybindingsRegistry.registerCommandAndKeybindingRule({
 	id: 'workbench.statusBar.clearFocus',
 	weight: KeybindingWeight.WorkbenchContrib,
 	primary: KeyCode.Escape,
-	when: CONTEXT_STATUS_BAR_FOCUSED,
+	when: StatusBarFocused,
 	handler: (accessor: ServicesAccessor) => {
 		const statusBarService = accessor.get(IStatusbarService);
 		const editorService = accessor.get(IEditorService);
@@ -116,7 +114,7 @@ class FocusStatusBarAction extends Action2 {
 		super({
 			id: 'workbench.action.focusStatusBar',
 			title: { value: localize('focusStatusBar', "Focus Status Bar"), original: 'Focus Status Bar' },
-			category: CATEGORIES.View,
+			category: Categories.View,
 			f1: true
 		});
 	}

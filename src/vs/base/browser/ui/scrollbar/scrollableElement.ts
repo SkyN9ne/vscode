@@ -86,6 +86,17 @@ export class MouseWheelClassifier {
 		return (score <= 0.5);
 	}
 
+	public acceptStandardWheelEvent(e: StandardWheelEvent): void {
+		const osZoomFactor = window.devicePixelRatio / getZoomFactor();
+		if (platform.isWindows || platform.isLinux) {
+			// On Windows and Linux, the incoming delta events are multiplied with the OS zoom factor.
+			// The OS zoom factor can be reverse engineered by using the device pixel ratio and the configured zoom factor into account.
+			this.accept(Date.now(), e.deltaX / osZoomFactor, e.deltaY / osZoomFactor);
+		} else {
+			this.accept(Date.now(), e.deltaX, e.deltaY);
+		}
+	}
+
 	public accept(timestamp: number, deltaX: number, deltaY: number): void {
 		const item = new MouseWheelClassifierItem(timestamp, deltaX, deltaY);
 		item.score = this._computeScore(item);
@@ -175,6 +186,10 @@ export abstract class AbstractScrollableElement extends Widget {
 	private readonly _onWillScroll = this._register(new Emitter<ScrollEvent>());
 	public readonly onWillScroll: Event<ScrollEvent> = this._onWillScroll.event;
 
+	public get options(): Readonly<ScrollableElementResolvedOptions> {
+		return this._options;
+	}
+
 	protected constructor(element: HTMLElement, options: ScrollableElementCreationOptions, scrollable: Scrollable) {
 		super();
 		element.style.overflow = 'hidden';
@@ -228,7 +243,7 @@ export abstract class AbstractScrollableElement extends Widget {
 		this._setListeningToMouseWheel(this._options.handleMouseWheel);
 
 		this.onmouseover(this._listenOnDomNode, (e) => this._onMouseOver(e));
-		this.onnonbubblingmouseout(this._listenOnDomNode, (e) => this._onMouseOut(e));
+		this.onmouseleave(this._listenOnDomNode, (e) => this._onMouseLeave(e));
 
 		this._hideTimeout = this._register(new TimeoutTimer());
 		this._isDragging = false;
@@ -259,11 +274,11 @@ export abstract class AbstractScrollableElement extends Widget {
 	}
 
 	/**
-	 * Delegate a mouse down event to the vertical scrollbar.
+	 * Delegate a pointer down event to the vertical scrollbar.
 	 * This is to help with clicking somewhere else and having the scrollbar react.
 	 */
-	public delegateVerticalScrollbarMouseDown(browserEvent: IMouseEvent): void {
-		this._verticalScrollbar.delegateMouseDown(browserEvent);
+	public delegateVerticalScrollbarPointerDown(browserEvent: PointerEvent): void {
+		this._verticalScrollbar.delegatePointerDown(browserEvent);
 	}
 
 	public getScrollDimensions(): IScrollDimensions {
@@ -330,7 +345,7 @@ export abstract class AbstractScrollableElement extends Widget {
 		this._revealOnScroll = value;
 	}
 
-	public triggerScrollFromMouseWheelEvent(browserEvent: IMouseWheelEvent) {
+	public delegateScrollFromMouseWheelEvent(browserEvent: IMouseWheelEvent) {
 		this._onMouseWheel(new StandardWheelEvent(browserEvent));
 	}
 
@@ -361,14 +376,7 @@ export abstract class AbstractScrollableElement extends Widget {
 
 		const classifier = MouseWheelClassifier.INSTANCE;
 		if (SCROLL_WHEEL_SMOOTH_SCROLL_ENABLED) {
-			const osZoomFactor = window.devicePixelRatio / getZoomFactor();
-			if (platform.isWindows || platform.isLinux) {
-				// On Windows and Linux, the incoming delta events are multiplied with the OS zoom factor.
-				// The OS zoom factor can be reverse engineered by using the device pixel ratio and the configured zoom factor into account.
-				classifier.accept(Date.now(), e.deltaX / osZoomFactor, e.deltaY / osZoomFactor);
-			} else {
-				classifier.accept(Date.now(), e.deltaX, e.deltaY);
-			}
+			classifier.acceptStandardWheelEvent(e);
 		}
 
 		// console.log(`${Date.now()}, ${e.deltaY}, ${e.deltaX}`);
@@ -521,7 +529,7 @@ export abstract class AbstractScrollableElement extends Widget {
 		this._hide();
 	}
 
-	private _onMouseOut(e: IMouseEvent): void {
+	private _onMouseLeave(e: IMouseEvent): void {
 		this._mouseIsOver = false;
 		this._hide();
 	}
@@ -556,7 +564,11 @@ export class ScrollableElement extends AbstractScrollableElement {
 	constructor(element: HTMLElement, options: ScrollableElementCreationOptions) {
 		options = options || {};
 		options.mouseWheelSmoothScroll = false;
-		const scrollable = new Scrollable(0, (callback) => dom.scheduleAtNextAnimationFrame(callback));
+		const scrollable = new Scrollable({
+			forceIntegerValues: true,
+			smoothScrollDuration: 0,
+			scheduleAtNextAnimationFrame: (callback) => dom.scheduleAtNextAnimationFrame(callback)
+		});
 		super(element, options, scrollable);
 		this._register(scrollable);
 	}
@@ -590,12 +602,20 @@ export class SmoothScrollableElement extends AbstractScrollableElement {
 
 }
 
-export class DomScrollableElement extends ScrollableElement {
+export class DomScrollableElement extends AbstractScrollableElement {
 
 	private _element: HTMLElement;
 
 	constructor(element: HTMLElement, options: ScrollableElementCreationOptions) {
-		super(element, options);
+		options = options || {};
+		options.mouseWheelSmoothScroll = false;
+		const scrollable = new Scrollable({
+			forceIntegerValues: false, // See https://github.com/microsoft/vscode/issues/139877
+			smoothScrollDuration: 0,
+			scheduleAtNextAnimationFrame: (callback) => dom.scheduleAtNextAnimationFrame(callback)
+		});
+		super(element, options, scrollable);
+		this._register(scrollable);
 		this._element = element;
 		this.onScroll((e) => {
 			if (e.scrollTopChanged) {
@@ -606,6 +626,14 @@ export class DomScrollableElement extends ScrollableElement {
 			}
 		});
 		this.scanDomNode();
+	}
+
+	public setScrollPosition(update: INewScrollPosition): void {
+		this._scrollable.setScrollPositionNow(update);
+	}
+
+	public getScrollPosition(): IScrollPosition {
+		return this._scrollable.getCurrentScrollPosition();
 	}
 
 	public scanDomNode(): void {

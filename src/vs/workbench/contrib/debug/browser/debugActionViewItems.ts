@@ -32,10 +32,10 @@ export class StartDebugActionViewItem extends BaseActionViewItem {
 	private container!: HTMLElement;
 	private start!: HTMLElement;
 	private selectBox: SelectBox;
-	private debugOptions: { label: string, handler: (() => Promise<boolean>) }[] = [];
+	private debugOptions: { label: string; handler: (() => Promise<boolean>) }[] = [];
 	private toDispose: IDisposable[];
 	private selected = 0;
-	private providers: { label: string, type: string, pick: () => Promise<{ launch: ILaunch, config: IConfig } | undefined> }[] = [];
+	private providers: { label: string; type: string; pick: () => Promise<{ launch: ILaunch; config: IConfig } | undefined> }[] = [];
 
 	constructor(
 		private context: unknown,
@@ -99,9 +99,6 @@ export class StartDebugActionViewItem extends BaseActionViewItem {
 
 		this.toDispose.push(dom.addDisposableListener(this.start, dom.EventType.KEY_DOWN, (e: KeyboardEvent) => {
 			const event = new StandardKeyboardEvent(e);
-			if (event.equals(KeyCode.Enter) && this.debugService.state !== State.Initializing) {
-				this.actionRunner.run(this.action, this.context);
-			}
 			if (event.equals(KeyCode.RightArrow)) {
 				this.start.tabIndex = -1;
 				this.selectBox.focus();

@@ -8,9 +8,10 @@ import { LRUCache } from 'vs/base/common/map';
 import { clamp, MovingAverage, SlidingWindowAverage } from 'vs/base/common/numbers';
 import { LanguageFeatureRegistry } from 'vs/editor/common/languageFeatureRegistry';
 import { ITextModel } from 'vs/editor/common/model';
-import { registerSingleton } from 'vs/platform/instantiation/common/extensions';
+import { InstantiationType, registerSingleton } from 'vs/platform/instantiation/common/extensions';
 import { createDecorator } from 'vs/platform/instantiation/common/instantiation';
 import { ILogService } from 'vs/platform/log/common/log';
+import { matchesScheme } from 'vs/platform/opener/common/opener';
 
 
 export const ILanguageFeatureDebounceService = createDecorator<ILanguageFeatureDebounceService>('ILanguageFeatureDebounceService');
@@ -19,7 +20,7 @@ export interface ILanguageFeatureDebounceService {
 
 	readonly _serviceBrand: undefined;
 
-	for(feature: LanguageFeatureRegistry<object>, debugName: string, config?: { min?: number, salt?: string }): IFeatureDebounceInformation;
+	for(feature: LanguageFeatureRegistry<object>, debugName: string, config?: { min?: number; max?: number; salt?: string }): IFeatureDebounceInformation;
 }
 
 export interface IFeatureDebounceInformation {
@@ -51,7 +52,7 @@ class FeatureDebounceInformation implements IFeatureDebounceInformation {
 		private readonly _registry: LanguageFeatureRegistry<object>,
 		private readonly _default: number,
 		private readonly _min: number,
-		private readonly _max: number = Number.MAX_SAFE_INTEGER,
+		private readonly _max: number,
 	) { }
 
 	private _key(model: ITextModel): string {
@@ -74,7 +75,9 @@ class FeatureDebounceInformation implements IFeatureDebounceInformation {
 			this._cache.set(key, avg);
 		}
 		const newValue = clamp(avg.update(value), this._min, this._max);
-		this._logService.trace(`[DEBOUNCE: ${this._name}] for ${model.uri.toString()} is ${newValue}ms`);
+		if (!matchesScheme(model.uri, 'output')) {
+			this._logService.trace(`[DEBOUNCE: ${this._name}] for ${model.uri.toString()} is ${newValue}ms`);
+		}
 		return newValue;
 	}
 
@@ -103,8 +106,9 @@ export class LanguageFeatureDebounceService implements ILanguageFeatureDebounceS
 
 	}
 
-	for(feature: LanguageFeatureRegistry<object>, name: string, config?: { min?: number, key?: string }): IFeatureDebounceInformation {
+	for(feature: LanguageFeatureRegistry<object>, name: string, config?: { min?: number; max?: number; key?: string }): IFeatureDebounceInformation {
 		const min = config?.min ?? 50;
+		const max = config?.max ?? min ** 2;
 		const extra = config?.key ?? undefined;
 		const key = `${IdentityHash.of(feature)},${min}${extra ? ',' + extra : ''}`;
 		let info = this._data.get(key);
@@ -114,7 +118,8 @@ export class LanguageFeatureDebounceService implements ILanguageFeatureDebounceS
 				name,
 				feature,
 				(this._overallAverage() | 0) || (min * 1.5), // default is overall default or derived from min-value
-				min
+				min,
+				max
 			);
 			this._data.set(key, info);
 		}
@@ -123,12 +128,12 @@ export class LanguageFeatureDebounceService implements ILanguageFeatureDebounceS
 
 	private _overallAverage(): number {
 		// Average of all language features. Not a great value but an approximation
-		let result = new MovingAverage();
-		for (let info of this._data.values()) {
+		const result = new MovingAverage();
+		for (const info of this._data.values()) {
 			result.update(info.default());
 		}
 		return result.value;
 	}
 }
 
-registerSingleton(ILanguageFeatureDebounceService, LanguageFeatureDebounceService, true);
+registerSingleton(ILanguageFeatureDebounceService, LanguageFeatureDebounceService, InstantiationType.Delayed);

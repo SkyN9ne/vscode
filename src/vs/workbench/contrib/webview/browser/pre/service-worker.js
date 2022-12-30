@@ -17,6 +17,8 @@ const rootPath = sw.location.pathname.replace(/\/service-worker.js$/, '');
 
 const searchParams = new URL(location.toString()).searchParams;
 
+const remoteAuthority = searchParams.get('remoteAuthority');
+
 /**
  * Origin used for resources
  */
@@ -42,15 +44,6 @@ class RequestStore {
 		this.map = new Map();
 
 		this.requestPool = 0;
-	}
-
-	/**
-	 * @param {number} requestId
-	 * @return {Promise<T> | undefined}
-	 */
-	get(requestId) {
-		const entry = this.map.get(requestId);
-		return entry && entry.promise;
 	}
 
 	/**
@@ -129,39 +122,37 @@ const methodNotAllowed = () =>
 
 sw.addEventListener('message', async (event) => {
 	switch (event.data.channel) {
-		case 'version':
-			{
-				const source = /** @type {Client} */ (event.source);
-				sw.clients.get(source.id).then(client => {
-					if (client) {
-						client.postMessage({
-							channel: 'version',
-							version: VERSION
-						});
-					}
-				});
-				return;
-			}
-		case 'did-load-resource':
-			{
-				/** @type {ResourceResponse} */
-				const response = event.data.data;
-				if (!resourceRequestStore.resolve(response.id, response)) {
-					console.log('Could not resolve unknown resource', response.path);
+		case 'version': {
+			const source = /** @type {Client} */ (event.source);
+			sw.clients.get(source.id).then(client => {
+				if (client) {
+					client.postMessage({
+						channel: 'version',
+						version: VERSION
+					});
 				}
-				return;
+			});
+			return;
+		}
+		case 'did-load-resource': {
+			/** @type {ResourceResponse} */
+			const response = event.data.data;
+			if (!resourceRequestStore.resolve(response.id, response)) {
+				console.log('Could not resolve unknown resource', response.path);
 			}
-		case 'did-load-localhost':
-			{
-				const data = event.data.data;
-				if (!localhostRequestStore.resolve(data.id, data.location)) {
-					console.log('Could not resolve unknown localhost', data.origin);
-				}
-				return;
+			return;
+		}
+		case 'did-load-localhost': {
+			const data = event.data.data;
+			if (!localhostRequestStore.resolve(data.id, data.location)) {
+				console.log('Could not resolve unknown localhost', data.origin);
 			}
-		default:
+			return;
+		}
+		default: {
 			console.log('Unknown message');
 			return;
+		}
 	}
 });
 
@@ -170,11 +161,41 @@ sw.addEventListener('fetch', (event) => {
 	if (requestUrl.protocol === 'https:' && requestUrl.hostname.endsWith('.' + resourceBaseAuthority)) {
 		switch (event.request.method) {
 			case 'GET':
-			case 'HEAD':
-				return event.respondWith(processResourceRequest(event, requestUrl));
-
-			default:
+			case 'HEAD': {
+				const firstHostSegment = requestUrl.hostname.slice(0, requestUrl.hostname.length - (resourceBaseAuthority.length + 1));
+				const scheme = firstHostSegment.split('+', 1)[0];
+				const authority = firstHostSegment.slice(scheme.length + 1); // may be empty
+				return event.respondWith(processResourceRequest(event, {
+					scheme,
+					authority,
+					path: requestUrl.pathname,
+					query: requestUrl.search.replace(/^\?/, ''),
+				}));
+			}
+			default: {
 				return event.respondWith(methodNotAllowed());
+			}
+		}
+	}
+
+	// If we're making a request against the remote authority, we want to go
+	// through VS Code itself so that we are authenticated properly.  If the
+	// service worker is hosted on the same origin we will have cookies and
+	// authentication will not be an issue.
+	if (requestUrl.origin !== sw.origin && requestUrl.host === remoteAuthority) {
+		switch (event.request.method) {
+			case 'GET':
+			case 'HEAD': {
+				return event.respondWith(processResourceRequest(event, {
+					path: requestUrl.pathname,
+					scheme: requestUrl.protocol.slice(0, requestUrl.protocol.length - 1),
+					authority: requestUrl.host,
+					query: requestUrl.search.replace(/^\?/, ''),
+				}));
+			}
+			default: {
+				return event.respondWith(methodNotAllowed());
+			}
 		}
 	}
 
@@ -194,9 +215,14 @@ sw.addEventListener('activate', (event) => {
 
 /**
  * @param {FetchEvent} event
- * @param {URL} requestUrl
+ * @param {{
+ * 		scheme: string;
+ * 		authority: string;
+ * 		path: string;
+ * 		query: string;
+ * }} requestUrlComponents
  */
-async function processResourceRequest(event, requestUrl) {
+async function processResourceRequest(event, requestUrlComponents) {
 	const client = await sw.clients.get(event.clientId);
 	if (!client) {
 		console.error('Could not find inner client for request');
@@ -233,11 +259,48 @@ async function processResourceRequest(event, requestUrl) {
 		}
 
 		/** @type {Record<string, string>} */
-		const headers = {
-			'Content-Type': entry.mime,
-			'Content-Length': entry.data.byteLength.toString(),
+		const commonHeaders = {
 			'Access-Control-Allow-Origin': '*',
 		};
+
+		const byteLength = entry.data.byteLength;
+
+		const range = event.request.headers.get('range');
+		if (range) {
+			// To support seeking for videos, we need to handle range requests
+			const bytes = range.match(/^bytes\=(\d+)\-(\d+)?$/g);
+			if (bytes) {
+				// TODO: Right now we are always reading the full file content. This is a bad idea
+				// for large video files :)
+
+				const start = Number(bytes[1]);
+				const end = Number(bytes[2]) || byteLength - 1;
+				return new Response(entry.data.slice(start, end + 1), {
+					status: 206,
+					headers: {
+						...commonHeaders,
+						'Content-range': `bytes 0-${end}/${byteLength}`,
+					}
+				});
+			} else {
+				// We don't understand the requested bytes
+				return new Response(null, {
+					status: 416,
+					headers: {
+						...commonHeaders,
+						'Content-range': `*/${byteLength}`
+					}
+				});
+			}
+		}
+
+		/** @type {Record<string, string>} */
+		const headers = {
+			...commonHeaders,
+			'Content-Type': entry.mime,
+			'Content-Length': byteLength.toString(),
+		};
+
 		if (entry.etag) {
 			headers['ETag'] = entry.etag;
 			headers['Cache-Control'] = 'no-cache';
@@ -245,6 +308,18 @@ async function processResourceRequest(event, requestUrl) {
 		if (entry.mtime) {
 			headers['Last-Modified'] = new Date(entry.mtime).toUTCString();
 		}
+
+		// support COI requests, see network.ts#COI.getHeadersFromQuery(...)
+		const coiRequest = new URL(event.request.url).searchParams.get('vscode-coi');
+		if (coiRequest === '3') {
+			headers['Cross-Origin-Opener-Policy'] = 'same-origin';
+			headers['Cross-Origin-Embedder-Policy'] = 'require-corp';
+		} else if (coiRequest === '2') {
+			headers['Cross-Origin-Embedder-Policy'] = 'require-corp';
+		} else if (coiRequest === '1') {
+			headers['Cross-Origin-Opener-Policy'] = 'same-origin';
+		}
+
 		const response = new Response(entry.data, {
 			status: 200,
 			headers
@@ -273,18 +348,14 @@ async function processResourceRequest(event, requestUrl) {
 
 	const { requestId, promise } = resourceRequestStore.create();
 
-	const firstHostSegment = requestUrl.hostname.slice(0, requestUrl.hostname.length - (resourceBaseAuthority.length + 1));
-	const scheme = firstHostSegment.split('+', 1)[0];
-	const authority = firstHostSegment.slice(scheme.length + 1); // may be empty
-
 	for (const parentClient of parentClients) {
 		parentClient.postMessage({
 			channel: 'load-resource',
 			id: requestId,
-			path: requestUrl.pathname,
-			scheme,
-			authority,
-			query: requestUrl.search.replace(/^\?/, ''),
+			scheme: requestUrlComponents.scheme,
+			authority: requestUrlComponents.authority,
+			path: requestUrlComponents.path,
+			query: requestUrlComponents.query,
 			ifNoneMatch: cached?.headers.get('ETag'),
 		});
 	}
@@ -364,7 +435,7 @@ async function getOuterIframeClient(webviewId) {
 	const allClients = await sw.clients.matchAll({ includeUncontrolled: true });
 	return allClients.filter(client => {
 		const clientUrl = new URL(client.url);
-		const hasExpectedPathName = (clientUrl.pathname === `${rootPath}/` || clientUrl.pathname === `${rootPath}/index.html`);
+		const hasExpectedPathName = (clientUrl.pathname === `${rootPath}/` || clientUrl.pathname === `${rootPath}/index.html` || clientUrl.pathname === `${rootPath}/index-no-csp.html`);
 		return hasExpectedPathName && clientUrl.searchParams.get('id') === webviewId;
 	});
 }

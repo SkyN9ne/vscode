@@ -5,7 +5,7 @@
 
 import { $ } from 'vs/base/browser/dom';
 import { IView, IViewSize } from 'vs/base/browser/ui/grid/grid';
-import { IBoundarySashes } from 'vs/base/browser/ui/grid/gridview';
+import { IBoundarySashes } from 'vs/base/browser/ui/sash/sash';
 import { ISplitViewStyles, IView as ISplitViewView, Orientation, SplitView } from 'vs/base/browser/ui/splitview/splitview';
 import { Color } from 'vs/base/common/color';
 import { Event } from 'vs/base/common/event';
@@ -21,7 +21,7 @@ const GOLDEN_RATIO = {
 	rightMarginRatio: 0.1909
 };
 
-function createEmptyView(background: Color | undefined): ISplitViewView<{ top: number, left: number }> {
+function createEmptyView(background: Color | undefined): ISplitViewView<{ top: number; left: number }> {
 	const element = $('.centered-layout-margin');
 	element.style.height = '100%';
 	if (background) {
@@ -37,7 +37,7 @@ function createEmptyView(background: Color | undefined): ISplitViewView<{ top: n
 	};
 }
 
-function toSplitViewView(view: IView, getHeight: () => number): ISplitViewView<{ top: number, left: number }> {
+function toSplitViewView(view: IView, getHeight: () => number): ISplitViewView<{ top: number; left: number }> {
 	return {
 		element: view.element,
 		get maximumSize() { return view.maximumWidth; },
@@ -53,12 +53,12 @@ export interface ICenteredViewStyles extends ISplitViewStyles {
 
 export class CenteredViewLayout implements IDisposable {
 
-	private splitView?: SplitView<{ top: number, left: number }>;
+	private splitView?: SplitView<{ top: number; left: number }>;
 	private width: number = 0;
 	private height: number = 0;
 	private style!: ICenteredViewStyles;
 	private didLayout = false;
-	private emptyViews: ISplitViewView<{ top: number, left: number }>[] | undefined;
+	private emptyViews: ISplitViewView<{ top: number; left: number }>[] | undefined;
 	private readonly splitViewDisposables = new DisposableStore();
 
 	constructor(private container: HTMLElement, private view: IView, public readonly state: CenteredViewState = { leftMarginRatio: GOLDEN_RATIO.leftMarginRatio, rightMarginRatio: GOLDEN_RATIO.rightMarginRatio }) {
@@ -159,9 +159,7 @@ export class CenteredViewLayout implements IDisposable {
 				this.container.removeChild(this.splitView.el);
 			}
 			this.splitViewDisposables.clear();
-			if (this.splitView) {
-				this.splitView.dispose();
-			}
+			this.splitView?.dispose();
 			this.splitView = undefined;
 			this.emptyViews = undefined;
 			this.container.appendChild(this.view.element);

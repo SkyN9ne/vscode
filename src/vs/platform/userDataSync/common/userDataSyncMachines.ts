@@ -41,7 +41,7 @@ export interface IUserDataSyncMachinesService {
 	addCurrentMachine(manifest?: IUserDataManifest): Promise<void>;
 	removeCurrentMachine(manifest?: IUserDataManifest): Promise<void>;
 	renameMachine(machineId: string, name: string): Promise<void>;
-	setEnablement(machineId: string, enabled: boolean): Promise<void>;
+	setEnablements(enbalements: [string, boolean][]): Promise<void>;
 }
 
 const currentMachineNameKey = 'sync.currentMachineName';
@@ -132,22 +132,24 @@ export class UserDataSyncMachinesService extends Disposable implements IUserData
 			await this.writeMachinesData(machineData);
 			const currentMachineId = await this.currentMachineIdPromise;
 			if (machineId === currentMachineId) {
-				this.storageService.store(currentMachineNameKey, name, StorageScope.GLOBAL, StorageTarget.MACHINE);
+				this.storageService.store(currentMachineNameKey, name, StorageScope.APPLICATION, StorageTarget.MACHINE);
 			}
 		}
 	}
 
-	async setEnablement(machineId: string, enabled: boolean): Promise<void> {
+	async setEnablements(enablements: [string, boolean][]): Promise<void> {
 		const machineData = await this.readMachinesData();
-		const machine = machineData.machines.find(({ id }) => id === machineId);
-		if (machine) {
-			machine.disabled = enabled ? undefined : true;
-			await this.writeMachinesData(machineData);
+		for (const [machineId, enabled] of enablements) {
+			const machine = machineData.machines.find(machine => machine.id === machineId);
+			if (machine) {
+				machine.disabled = enabled ? undefined : true;
+			}
 		}
+		await this.writeMachinesData(machineData);
 	}
 
 	private computeCurrentMachineName(machines: IMachineData[]): string {
-		const previousName = this.storageService.get(currentMachineNameKey, StorageScope.GLOBAL);
+		const previousName = this.storageService.get(currentMachineNameKey, StorageScope.APPLICATION);
 		if (previousName) {
 			return previousName;
 		}
@@ -174,7 +176,7 @@ export class UserDataSyncMachinesService extends Disposable implements IUserData
 
 	private async writeMachinesData(machinesData: IMachinesData): Promise<void> {
 		const content = JSON.stringify(machinesData);
-		const ref = await this.userDataSyncStoreService.write(UserDataSyncMachinesService.RESOURCE, content, this.userData?.ref || null);
+		const ref = await this.userDataSyncStoreService.writeResource(UserDataSyncMachinesService.RESOURCE, content, this.userData?.ref || null);
 		this.userData = { ref, content };
 		this._onDidChange.fire();
 	}
@@ -195,7 +197,7 @@ export class UserDataSyncMachinesService extends Disposable implements IUserData
 			}
 		}
 
-		return this.userDataSyncStoreService.read(UserDataSyncMachinesService.RESOURCE, this.userData);
+		return this.userDataSyncStoreService.readResource(UserDataSyncMachinesService.RESOURCE, this.userData);
 	}
 
 	private parse(userData: IUserData): IMachinesData {

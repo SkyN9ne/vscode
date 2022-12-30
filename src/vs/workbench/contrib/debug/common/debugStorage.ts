@@ -59,7 +59,7 @@ export class DebugStorage {
 		let result: ExceptionBreakpoint[] | undefined;
 		try {
 			result = JSON.parse(this.storageService.get(DEBUG_EXCEPTION_BREAKPOINTS_KEY, StorageScope.WORKSPACE, '[]')).map((exBreakpoint: any) => {
-				return new ExceptionBreakpoint(exBreakpoint.filter, exBreakpoint.label, exBreakpoint.enabled, exBreakpoint.supportsCondition, exBreakpoint.condition, exBreakpoint.description, exBreakpoint.conditionDescription);
+				return new ExceptionBreakpoint(exBreakpoint.filter, exBreakpoint.label, exBreakpoint.enabled, exBreakpoint.supportsCondition, exBreakpoint.condition, exBreakpoint.description, exBreakpoint.conditionDescription, !!exBreakpoint.fallback);
 			});
 		} catch (e) { }
 
@@ -80,7 +80,7 @@ export class DebugStorage {
 	loadWatchExpressions(): Expression[] {
 		let result: Expression[] | undefined;
 		try {
-			result = JSON.parse(this.storageService.get(DEBUG_WATCH_EXPRESSIONS_KEY, StorageScope.WORKSPACE, '[]')).map((watchStoredData: { name: string, id: string }) => {
+			result = JSON.parse(this.storageService.get(DEBUG_WATCH_EXPRESSIONS_KEY, StorageScope.WORKSPACE, '[]')).map((watchStoredData: { name: string; id: string }) => {
 				return new Expression(watchStoredData.name, watchStoredData.id);
 			});
 		} catch (e) { }

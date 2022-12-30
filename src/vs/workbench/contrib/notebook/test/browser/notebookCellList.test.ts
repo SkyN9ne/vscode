@@ -40,6 +40,7 @@ suite('NotebookCellList', () => {
 			async (editor, viewModel) => {
 				viewModel.restoreEditorViewState({
 					editingCells: [false, false, false, false, false],
+					cellLineNumberStates: {},
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
 					collapsedInputCells: {},
@@ -88,6 +89,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -131,6 +133,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -167,6 +170,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -208,6 +212,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -260,6 +265,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -295,6 +301,7 @@ suite('NotebookCellList', () => {
 					editingCells: [false, false, false, false, false],
 					editorViewStates: [null, null, null, null, null],
 					cellTotalHeights: [50, 100, 50, 100, 50],
+					cellLineNumberStates: {},
 					collapsedInputCells: {},
 					collapsedOutputCells: {},
 				});
@@ -315,6 +322,46 @@ suite('NotebookCellList', () => {
 
 				cellList.updateElementHeight2(viewModel.cellAt(0)!, 30);
 				assert.deepStrictEqual(cellList.scrollTop, 60);
+			});
+	});
+
+	test('visibleRanges should be exclusive of end', async function () {
+		await withTestNotebook(
+			[
+			],
+			async (editor, viewModel) => {
+				const cellList = createNotebookCellList(instantiationService);
+				cellList.attachViewModel(viewModel);
+
+				// render height 210, it can render 3 full cells and 1 partial cell
+				cellList.layout(100, 100);
+
+				assert.deepStrictEqual(cellList.visibleRanges, []);
+			});
+	});
+
+	test('visibleRanges should be exclusive of end 2', async function () {
+		await withTestNotebook(
+			[
+				['# header a', 'markdown', CellKind.Markup, [], {}],
+			],
+			async (editor, viewModel) => {
+				viewModel.restoreEditorViewState({
+					editingCells: [false],
+					editorViewStates: [null],
+					cellTotalHeights: [50],
+					cellLineNumberStates: {},
+					collapsedInputCells: {},
+					collapsedOutputCells: {},
+				});
+
+				const cellList = createNotebookCellList(instantiationService);
+				cellList.attachViewModel(viewModel);
+
+				// render height 210, it can render 3 full cells and 1 partial cell
+				cellList.layout(100, 100);
+
+				assert.deepStrictEqual(cellList.visibleRanges, [{ start: 0, end: 1 }]);
 			});
 	});
 });
