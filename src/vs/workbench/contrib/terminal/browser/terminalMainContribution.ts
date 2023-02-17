@@ -3,21 +3,17 @@
  *  Licensed under the MIT License. See License.txt in the project root for license information.
  *--------------------------------------------------------------------------------------------*/
 
-import { URI } from 'vs/base/common/uri';
-import { Disposable, toDisposable } from 'vs/base/common/lifecycle';
+import { Disposable } from 'vs/base/common/lifecycle';
 import { Schemas } from 'vs/base/common/network';
-import { localize } from 'vs/nls';
-import { IEnvironmentService } from 'vs/platform/environment/common/environment';
-import { IFileService } from 'vs/platform/files/common/files';
+import { TabFocus } from 'vs/editor/browser/config/tabFocus';
+import { IConfigurationService } from 'vs/platform/configuration/common/configuration';
+import { IContextKeyService } from 'vs/platform/contextkey/common/contextkey';
 import { ILabelService } from 'vs/platform/label/common/label';
-import { ILogService } from 'vs/platform/log/common/log';
+import { TerminalSettingId } from 'vs/platform/terminal/common/terminal';
 import { IWorkbenchContribution } from 'vs/workbench/common/contributions';
 import { ITerminalEditorService, ITerminalGroupService, ITerminalService, terminalEditorId } from 'vs/workbench/contrib/terminal/browser/terminal';
 import { terminalStrings } from 'vs/workbench/contrib/terminal/common/terminalStrings';
 import { IEditorResolverService, RegisteredEditorPriority } from 'vs/workbench/services/editor/common/editorResolverService';
-import { registerLogChannel } from 'vs/workbench/services/output/common/output';
-import { join } from 'vs/base/common/path';
-import { TerminalLogConstants } from 'vs/platform/terminal/common/terminal';
 
 /**
  * The main contribution for the terminal contrib. This contains calls to other components necessary
@@ -25,15 +21,16 @@ import { TerminalLogConstants } from 'vs/platform/terminal/common/terminal';
  * be more relevant).
  */
 export class TerminalMainContribution extends Disposable implements IWorkbenchContribution {
+	private _editorTabFocus: boolean | undefined;
+	private _terminalTabFocus: boolean | undefined;
 	constructor(
 		@IEditorResolverService editorResolverService: IEditorResolverService,
-		@IEnvironmentService environmentService: IEnvironmentService,
-		@IFileService private readonly _fileService: IFileService,
 		@ILabelService labelService: ILabelService,
-		@ILogService private readonly _logService: ILogService,
 		@ITerminalService terminalService: ITerminalService,
 		@ITerminalEditorService terminalEditorService: ITerminalEditorService,
-		@ITerminalGroupService terminalGroupService: ITerminalGroupService
+		@ITerminalGroupService terminalGroupService: ITerminalGroupService,
+		@IConfigurationService configurationService: IConfigurationService,
+		@IContextKeyService contextKeyService: IContextKeyService
 	) {
 		super();
 
@@ -80,12 +77,32 @@ export class TerminalMainContribution extends Disposable implements IWorkbenchCo
 			}
 		});
 
-		// Register log channel
-		this._registerLogChannel('ptyHostLog', localize('ptyHost', "Pty Host"), URI.file(join(environmentService.logsPath, `${TerminalLogConstants.FileName}.log`)));
-	}
-
-	private _registerLogChannel(id: string, label: string, file: URI): void {
-		const promise = registerLogChannel(id, label, file, this._fileService, this._logService);
-		this._register(toDisposable(() => promise.cancel()));
+		const viewKey = new Set<string>();
+		viewKey.add('focusedView');
+		TabFocus.onDidChangeTabFocus(tabFocus => {
+			if (contextKeyService.getContextKeyValue('focusedView') === 'terminal') {
+				this._terminalTabFocus = tabFocus;
+			} else {
+				this._editorTabFocus = tabFocus;
+			}
+		});
+		this._register(contextKeyService.onDidChangeContext((c) => {
+			if (c.affectsSome(viewKey)) {
+				if (contextKeyService.getContextKeyValue('focusedView') === 'terminal') {
+					this._editorTabFocus = TabFocus.getTabFocusMode();
+					TabFocus.setTabFocusMode(this._terminalTabFocus ?? configurationService.getValue(TerminalSettingId.TabFocusMode));
+				} else {
+					this._terminalTabFocus = TabFocus.getTabFocusMode();
+					TabFocus.setTabFocusMode(this._editorTabFocus ?? configurationService.getValue('editor.tabFocusMode'));
+				}
+			}
+		}));
+		this._register(configurationService.onDidChangeConfiguration(async e => {
+			if (e.affectsConfiguration('editor.tabFocusMode')) {
+				this._editorTabFocus = undefined;
+			} else if (e.affectsConfiguration(TerminalSettingId.TabFocusMode)) {
+				this._terminalTabFocus = undefined;
+			}
+		}));
 	}
 }

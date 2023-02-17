@@ -75,7 +75,7 @@ export const TestNativeWindowConfiguration: INativeWindowConfiguration = {
 	windowId: 0,
 	machineId: 'testMachineId',
 	logLevel: LogLevel.Error,
-	loggers: [],
+	loggers: { global: [], window: [] },
 	mainPid: 0,
 	appRoot: '',
 	userEnv: {},
@@ -87,7 +87,8 @@ export const TestNativeWindowConfiguration: INativeWindowConfiguration = {
 	homeDir: homeDir,
 	tmpDir: tmpdir(),
 	userDataDir: getUserDataPath(args, product.nameShort),
-	profiles: { profile: NULL_PROFILE, all: [NULL_PROFILE] },
+	profiles: { profile: NULL_PROFILE, all: [NULL_PROFILE], home: URI.file(homeDir) },
+	preferUtilityProcess: false,
 	...args
 };
 

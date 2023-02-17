@@ -4,9 +4,11 @@
  *--------------------------------------------------------------------------------------------*/
 
 import { URI } from 'vs/base/common/uri';
-import { IDisposable } from 'vs/base/common/lifecycle';
+import { Disposable, IDisposable } from 'vs/base/common/lifecycle';
 import { IQuickDiffService, QuickDiff, QuickDiffProvider } from 'vs/workbench/contrib/scm/common/quickDiff';
 import { isEqualOrParent } from 'vs/base/common/resources';
+import { score } from 'vs/editor/common/languageSelector';
+import { Emitter } from 'vs/base/common/event';
 
 function createProviderComparer(uri: URI): (a: QuickDiffProvider, b: QuickDiffProvider) => number {
 	return (a, b) => {
@@ -33,16 +35,20 @@ function createProviderComparer(uri: URI): (a: QuickDiffProvider, b: QuickDiffPr
 	};
 }
 
-export class QuickDiffService implements IQuickDiffService {
+export class QuickDiffService extends Disposable implements IQuickDiffService {
 	declare readonly _serviceBrand: undefined;
 
 	private quickDiffProviders: Set<QuickDiffProvider> = new Set();
+	private readonly _onDidChangeQuickDiffProviders = this._register(new Emitter<void>());
+	readonly onDidChangeQuickDiffProviders = this._onDidChangeQuickDiffProviders.event;
 
 	addQuickDiffProvider(quickDiff: QuickDiffProvider): IDisposable {
 		this.quickDiffProviders.add(quickDiff);
+		this._onDidChangeQuickDiffProviders.fire();
 		return {
 			dispose: () => {
 				this.quickDiffProviders.delete(quickDiff);
+				this._onDidChangeQuickDiffProviders.fire();
 			}
 		};
 	}
@@ -51,12 +57,13 @@ export class QuickDiffService implements IQuickDiffService {
 		return !!diff.originalResource;
 	}
 
-	async getQuickDiffs(uri: URI): Promise<QuickDiff[]> {
+	async getQuickDiffs(uri: URI, language: string = '', isSynchronized: boolean = false): Promise<QuickDiff[]> {
 		const sorted = Array.from(this.quickDiffProviders).sort(createProviderComparer(uri));
 
 		const diffs = await Promise.all(Array.from(sorted.values()).map(async (provider) => {
+			const scoreValue = provider.selector ? score(provider.selector, uri, language, isSynchronized, undefined, undefined) : 10;
 			const diff = {
-				originalResource: await provider.getOriginalResource(uri),
+				originalResource: scoreValue > 0 ? await provider.getOriginalResource(uri) : null,
 				label: provider.label
 			};
 			return diff;
